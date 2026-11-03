@@ -49,6 +49,8 @@ try:
     check("unverified POST under challenge -> 403", status(r) == 403, r[:60])
     r = get("//evil.example/x", extra="X-Forwarded-For: 198.51.100.56\r\n", port=port)
     check("challenge redirect is never protocol-relative (no open redirect)", b"Location: /evil.example/x" in r and b"Location: //" not in r, r[:200])
+    r = get("/page", extra="X-Forwarded-For: 198.51.100.88\r\nCookie: tg_ok=08.00000000000000000000000000000000\r\n", port=port)
+    check("malformed cookie under an active challenge gets a clean 307 (no Tcl error)", status(r) == 307, r[:60])
     rc, out = g.ctl("level", "auto")
     time.sleep(0.2)
 
@@ -297,4 +299,26 @@ try:
 finally:
     g.stop(); echo.stop(); g.cleanup()
 
+# ---- reviewer finding: use-after-close when the backend closes after each response ----
+be3 = HttpBackend(close_after=True); p3 = free_port()
+g = Guard({"web": {"type": "http", "port": p3, "backendPort": be3.port, "reqRate": 1000000, "connRate": 1000000, "maxConnsPerIP": 100000}},
+          {"strikeThreshold": 1000000, "logLevel": "debug"})
+try:
+    g.start()
+    for i in range(40):
+        try:
+            s = socket.create_connection(("127.0.0.1", p3), 3); s.settimeout(1)
+            s.sendall(b"".join(b"GET /p%d HTTP/1.1\r\nHost: x\r\n\r\n" % k for k in range(4)))
+            try: s.recv(4000)
+            except OSError: pass
+            s.close()
+        except OSError: pass
+    time.sleep(2)
+    rc, out = g.ctl("debug")
+    leaked = {k: int(v) for k, v in re.findall(r"(httpState|httpBuf|tcpConns)\s+(\d+)", out)}
+    check("pipelining against a backend that closes: no leaked HTTP state", all(v == 0 for v in leaked.values()), leaked)
+    errs = [l for l in g.stderr().splitlines() if "background error" in l or "can't read" in l]
+    check("...and no Tcl errors", not errs, errs[:3])
+finally:
+    g.stop(); be3.stop(); g.cleanup()
 sys.exit(summary())

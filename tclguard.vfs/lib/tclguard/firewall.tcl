@@ -439,7 +439,11 @@ proc ::tg::fw::enqueue {op key until} {
     variable backend
     variable flushJob
     # Never let anything but a plain address/prefix reach a command line.
-    if {![::tg::ip::isTarget $key]} return
+    if {[::tg::ip::normCidr $key] ne $key} return      ;# canonical addresses only, never raw text
+    if {[llength $queue] > 20000} {
+        ::tg::log::warn "firewall queue overflow; dropping oldest entries"
+        set queue [lrange $queue 10000 end]
+    }
     set secs 0
     if {$until != 0} {
         set secs [expr {max(1, ($until - [::tg::now] + 999) / 1000)}]
@@ -522,11 +526,15 @@ proc ::tg::fw::commit {} {
             }
         }
         iptables {
+            # one process for the whole batch (a mass ban must not stall the event loop)
+            set lines {}
             foreach op $ops {
                 lassign $op o key secs
-                lassign [run [ipsOp $o $key $secs]] rc out
-                if {$rc != 0} { ::tg::log::warn "firewall: $key: [string trim $out]" }
+                set set [expr {[fam $key] == 6 ? "tclguard6" : "tclguard"}]
+                if {$o eq "ban"} { lappend lines "add $set $key timeout $secs" } else { lappend lines "del $set $key" }
             }
+            lassign [run [list [which ipset] restore -exist] "[join $lines \n]\n"] rc out
+            if {$rc != 0} { ::tg::log::warn "firewall: ipset restore failed: [string trim $out]" }
         }
     }
 }

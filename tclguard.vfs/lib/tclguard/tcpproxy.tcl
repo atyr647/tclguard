@@ -157,7 +157,8 @@ proc ::tg::tcp::accept {name chan ip port} {
         return
     }
     set privileged [::tg::ban::isAllowed $ip]
-    if {$total >= $maxTotal} {
+    # UDP sessions hold a descriptor too: count two of them as one proxied connection
+    if {$total + ($::tg::udp::total / 2) >= $maxTotal} {
         reject $chan $name $ip $key "global connection cap"
         return
     }
@@ -299,7 +300,7 @@ proc ::tg::tcp::backendReady {id} {
     # The client already finished sending (half-close) while we were connecting:
     # everything it sent is now queued to the backend, so pass the half-close on.
     variable late
-    if {$late($id)} { sideClosed $id c2b $cc($id) $b }
+    if {[info exists late($id)] && $late($id)} { sideClosed $id c2b $cc($id) $b }
 }
 
 proc ::tg::tcp::backendFailed {id why} {

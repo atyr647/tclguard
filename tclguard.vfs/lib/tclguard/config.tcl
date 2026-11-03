@@ -113,6 +113,7 @@ namespace eval ::tg::cfg {
         maxPacket 1500
         sessionTimeout 60
         banOffenders 1
+        learnTrust 0
     }
     variable watcherDefaults {
         enabled 1
@@ -462,7 +463,7 @@ proc ::tg::cfg::validate {cfg} {
                 lappend errs "$p: $k must be a whole number >= 0 (seconds, 0 = off)"
             }
         }
-        foreach k {lazyConnect forwardIp banOffenders} {
+        foreach k {lazyConnect forwardIp banOffenders learnTrust} {
             if {[dict exists $L $k] && ![string is boolean -strict [dict get $L $k]]} { lappend errs "$p: $k must be yes/no" }
         }
         if {[dict exists $L proxyProtocol] && [dict get $L proxyProtocol] ni {none v1 v2}} {

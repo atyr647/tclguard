@@ -155,7 +155,8 @@ proc ::tg::udp::inbound {name} {
                 return
             }
         }
-        if {$nsess($name) >= [dict get $L maxSessions]} {
+        if {$nsess($name) >= [dict get $L maxSessions] ||
+            [::tg::tcp::connectionCount] + ($total / 2) >= $::tg::tcp::maxTotal} {
             drop $ip $key 0 0 ""
             return
         }
@@ -184,8 +185,13 @@ proc ::tg::udp::openSession {name L ip port key} {
     variable sact; variable st0; variable spin; variable spout; variable snoted
     if {[catch {
         set u [udp_open]
-        fconfigure $u -blocking 0 -buffering none -translation binary -buffersize 65536 \
-            -remote [list [dict get $L backendHost] [dict get $L backendPort]]
+        if {[catch {
+            fconfigure $u -blocking 0 -buffering none -translation binary -buffersize 65536 \
+                -remote [list [dict get $L backendHost] [dict get $L backendPort]]
+        } err2]} {
+            catch {close $u}          ;# never leak the descriptor on a bad backend address
+            error $err2
+        }
     } err]} {
         ::tg::log::warn "UDP: cannot open upstream socket for '$name': $err"
         return ""
@@ -268,7 +274,7 @@ proc ::tg::udp::sweep {t} {
         if {![info exists cfg($name)]} { closeSession $id; continue }
         set to [dict get $cfg($name) sessionTimeout]
         if {$t - $sact($id) > $to * 1000} { closeSession $id; continue }
-        if {!$snoted($id) && $t - $st0($id) > 30000 && $spin($id) >= 20 && $spout($id) >= 20} {
+        if {!$snoted($id) && [::tg::bool [dict get $cfg($name) learnTrust]] && $t - $st0($id) > 30000 && $spin($id) >= 20 && $spout($id) >= 20} {
             set snoted($id) 1
             ::tg::trust::note $sip($id)
         }

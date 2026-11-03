@@ -42,6 +42,7 @@ proc ::tg::control::stop {} {
 proc ::tg::control::accept {chan ip port} {
     variable authed
     variable fails
+    if {[array size fails] >= 8} { catch {close $chan}; return }   ;# local tool: a few sessions at most
     fconfigure $chan -blocking 0 -buffering line -translation lf -encoding utf-8
     set fails($chan) 0
     fileevent $chan readable [list ::tg::control::readable $chan]

@@ -54,7 +54,7 @@ A systemd unit is in [packaging/tclguard.service](packaging/tclguard.service).
 | **Adaptive threat level** | Normal → Elevated → Under attack → Lockdown, driven by connection rate, block rate, packets/s and link saturation. Limits shrink automatically; Lockdown admits only addresses that behaved well before. Needs two consecutive seconds to raise and a calm period to lower, so one spike doesn't flap it. |
 | **Kernel firewall** | nftables (preferred), iptables+ipset, or Windows Firewall. Bans go in as timed set elements (they expire by themselves even if TclGuard dies). Optional *hardening*: per-source SYN/UDP/ICMP rate limits, invalid/fragment/bogus-flag drops, per-source connection counting where the kernel supports it (detected automatically). |
 | **Monitors / watchers** | `/proc` (Linux) or `netstat` (Windows) scan for servers you *can't* proxy; fail2ban-style log watchers (sshd, nginx presets). |
-| **Front ends** | Tk GUI (dashboard, live chart, wizard, bans, firewall, log, settings, help), headless mode, local control socket + CLI. |
+| **Front ends** | A modern Tk desktop app (sidebar navigation, light and dark themes, live status hero, sparklines and a hoverable traffic chart, preset tile wizard, inline allow/block chips, anti-aliased icons rendered at runtime so it needs no image files), plus headless mode and a local control socket + CLI. |
 
 ## Honest limits
 
@@ -72,11 +72,15 @@ Everything below was run against this code:
 
 | Suite | What it proves | Result |
 |---|---|---|
-| `make unit` | IP/CIDR math, config validation, ban/strike/escalation logic, threat-level state machine, firewall command generation, log watchers, packaging | 171 checks pass |
+| `make unit` | IP/CIDR math, config validation, ban/strike/escalation logic (incl. CIDR range bans), threat-level state machine, firewall command generation (incl. injection attempts), log watchers, packaging | 172 checks pass |
 | `make kernel` (root) | Real nftables in network namespaces: bans drop traffic and expire in-kernel; SYN flood 600→~120 connects; UDP flood 6000→~400 packets; counters; clean uninstall | 19 checks pass |
-| `make integration` | Real sockets against real backends: 20 malformed/smuggling requests refused, byte-exact bodies (5 KB, 1.5 MB, chunked), pipelining, keep-alive, slowloris/slow-POST, rate limits and bans, challenge cookie, trusted proxy, WebSocket, PROXY protocol v1/v2, UDP relay, lockdown, CLI, persistence | 94 checks pass |
+| `make integration` | Real sockets against real backends: 20 malformed/smuggling requests refused, byte-exact bodies (5 KB, 1.5 MB, chunked), pipelining, half-close, keep-alive, slowloris/slow-POST, rate limits and bans, challenge cookie, trusted proxy, WebSocket, PROXY protocol v1/v2, UDP relay, lockdown, CLI, persistence, plus regression tests for every issue an independent code review found | 105 checks pass |
+| `python3 tests/integration/test_leaks.py` | 14,400 abusive connections (RST, half-close, stalls, garbage, oversize) in three rounds: every table drains to zero, descriptors return to baseline, memory flat after the first round | pass |
+| `make gui-test` | Drives every GUI flow through the real widgets under a virtual display (wizard, edit dialog, toggles, bans, allow/block lists, level selector, settings, theme switch) and fails on any background error | 21 checks pass |
 | `tclguard selftest` | Live attack simulation you can run on your own machine | 15 checks pass |
 | `tools/lint_vars.py` | Catches procs that use namespace variables without declaring them | clean |
+
+An independent review of the HTTP/TCP/UDP/firewall/control code found, and this release fixes: request smuggling through chunk trailers and through an Upgrade request with a body, a use-after-close leak, an uncaught error on a malformed cookie, two CPU-wedge patterns (floods of blank lines / tiny chunks), a UDP descriptor leak, descriptor budgeting across UDP sessions, byte-offset drift in log watchers on invalid UTF-8, underscore-spelled `X_Real_IP` spoofing, and non-canonical keys reaching firewall commands. UDP reputation learning is now off by default because UDP addresses can be forged.
 
 ## Building the starpack
 

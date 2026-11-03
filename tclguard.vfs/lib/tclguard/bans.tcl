@@ -147,6 +147,10 @@ proc ::tg::ban::add {ip reason {sec ""} {source auto}} {
         return 0
     }
     set k [keyOf $ip]
+    if {![info exists banned($k)] && [array size banned] >= 200000} {
+        ::tg::log::warn "ban table full (200000 entries); not banning $k"
+        return 0
+    }
     set t [::tg::now]
     set level 0
     if {$sec eq ""} {
@@ -286,7 +290,8 @@ proc ::tg::ban::load {} {
             dict for {k info} [dict get $d banned] {
                 set until [dict get $info until]
                 if {$until != 0 && $until <= $t} continue
-                if {![::tg::ip::isTarget $k]} continue
+                # only canonical keys: these end up in firewall commands
+                if {[::tg::ip::normCidr $k] ne $k} continue
                 set banned($k) $info
                 lappend restored $k
             }

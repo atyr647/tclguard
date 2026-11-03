@@ -76,16 +76,19 @@ proc ::tg::logw::poll {t} {
         if {$st(size) == $pos($name)} continue
         if {[catch {
             set fh [open $path r]
-            fconfigure $fh -encoding utf-8 -translation binary
+            fconfigure $fh -encoding binary -translation binary
             seek $fh $pos($name)
             set data [read $fh 1048576]
             close $fh
         }]} continue
-        incr pos($name) [string bytelength $data]
+        # offsets are bytes; decode per line so invalid UTF-8 can never shift them
+        incr pos($name) [string length $data]
         set text "$carry($name)$data"
         set lines [split $text \n]
         set carry($name) [lindex $lines end]
-        foreach line [lrange $lines 0 end-1] { feedLine $name [string trimright $line \r] }
+        foreach line [lrange $lines 0 end-1] {
+            feedLine $name [encoding convertfrom utf-8 [string trimright $line \r]]
+        }
     }
 }
 

@@ -111,6 +111,42 @@ try:
     reqs = be.requests[n0:]
     check("request hidden inside a body is treated as body (1 request seen)", len(reqs) == 1 and reqs[0][2] == smug, reqs)
 
+    # ---- reviewer findings: regression tests ----
+    n0 = len(be.requests)
+    r = http_raw(port, b"POST /t HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n0\r\nX: y\n\nGET /admin HTTP/1.1\r\nHost: h\r\n\r\n", timeout=3)
+    check("chunk trailer containing bare LF (hidden request) is refused", status(r) == 400 and not any("admin" in q[0] for q in be.requests[n0:]), (r[:60], [q[0] for q in be.requests[n0:]]))
+    r = http_raw(port, b"POST /t HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n3\r\nabc\r\n0\r\nX-Checksum: abc\r\n\r\n", timeout=3)
+    check("a normal chunk trailer still passes", status(r) == 200 and be.requests[-1][2] == b"abc", r[:60])
+    body = b"GET /x HTTP/1.1\r\nHost: h\r\nFoo: GET /admin HTTP/1.0\r\nX: y\r\n\r\n"
+    n0 = len(be.requests)
+    r = http_raw(port, b"GET /w HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nContent-Length: %d\r\n\r\n" % len(body) + body, timeout=3)
+    check("Upgrade request carrying a body is refused (no desync)", status(r) == 400 and len(be.requests) == n0, (r[:60], len(be.requests) - n0))
+    r = get("/ok", extra="Cookie: tg_ok=08.00000000000000000000000000000000\r\n", port=port, timeout=3)
+    check("odd cookie values never raise (challenge off: plain 200)", status(r) == 200, r[:60])
+    t0 = time.time()
+    s = socket.create_connection(("127.0.0.1", port), 5); s.settimeout(5)
+    try: s.sendall(b"\r\n" * 200000)
+    except OSError: pass
+    d = b""
+    try: d = s.recv(200)
+    except OSError: pass
+    s.close()
+    check("a flood of leading CRLFs is rejected quickly (no CPU wedge)", time.time() - t0 < 2 and (status(d) == 400 or d == b""), round(time.time() - t0, 2))
+    t0 = time.time()
+    s = socket.create_connection(("127.0.0.1", port), 5); s.settimeout(5)
+    try:
+        s.sendall(b"POST /c HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n" + b"1\r\nx\r\n" * 60000)
+    except OSError: pass
+    d = b""
+    try: d = s.recv(200)
+    except OSError: pass
+    s.close()
+    check("a flood of tiny chunks is rejected quickly (no CPU wedge)", time.time() - t0 < 3 and status(d) in (400, 0), (round(time.time() - t0, 2), d[:40]))
+    # control plane stays responsive meanwhile
+    rc, out = g.ctl("ping")
+    check("guard still responsive after those attacks", rc == 0 and "pong" in out, out)
+    time.sleep(0.5)
+
     # ---- timeouts ----
     t = time.time()
     s = socket.create_connection(("127.0.0.1", port), 10); s.settimeout(10)

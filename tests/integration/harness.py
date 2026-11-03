@@ -26,7 +26,8 @@ def wait_port(port, timeout=8, host="127.0.0.1"):
 # ------------------------------------------------------------- backends ----
 class HttpBackend:
     """Tiny threaded HTTP/1.1 server that records what it receives."""
-    def __init__(self, port=None):
+    def __init__(self, port=None, close_after=False):
+        self.close_after = close_after
         self.port = port or free_port()
         self.requests = []          # raw header blocks + bodies
         self.lock = threading.Lock()
@@ -78,6 +79,7 @@ class HttpBackend:
                         c.sendall(b"echo:" + d)
                 resp = b"ok:" + lines[0].encode() + b":" + str(len(body)).encode()
                 c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n" % len(resp) + resp)
+                if self.close_after: return
         except Exception: pass
         finally:
             try: c.close()

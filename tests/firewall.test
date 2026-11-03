@@ -165,14 +165,22 @@ test fw-counters-parse {} -setup {setupFw nft {} $L} -body {
 } -result {c_ban 12 c_syn 3}
 
 # ---- iptables / ipset ----
-test fw-ipset {} -setup {setupFw iptables {} $L} -body {
+test fw-ipset {ipset bans are sent as one batched "ipset restore"} -setup {setupFw iptables {} $L} -body {
     ::tg::ban::add 1.2.3.4 x 90
     ::tg::ban::add 2001:db8::1 x 0 manual
     ::tg::fw::sync
-    set flat [lmap c $::cmds {lindex $c 0}]
-    list [lsearch -exact $flat {ipset add tclguard 1.2.3.4 timeout 90 -exist}] \
-         [lsearch -exact $flat {ipset add tclguard6 2001:db8::/64 timeout 0 -exist}]
-} -match glob -result {[0-9]* [0-9]*}
+    set restore {}
+    foreach c $::cmds { if {[lrange [lindex $c 0] 1 2] eq "restore -exist"} { set restore [lindex $c 1] } }
+    list [string match "*add tclguard 1.2.3.4 timeout 90*" $restore] [string match "*add tclguard6 2001:db8::/64 timeout 0*" $restore]
+} -result {1 1}
+
+test fw-noncanonical-key {only canonical addresses can reach a firewall command} -setup {setupFw nft {} $L} -body {
+    ::tg::fw::sync
+    set ::cmds {}
+    foreach evil [list " 1.2.3.4" "1.2.3.4%x" "1.2.3.4\nflush ruleset" "01.2.3.4" "1.2.3.4/24"] { ::tg::fw::enqueue ban $evil 0 }
+    ::tg::fw::commit
+    llength $::cmds
+} -result 0
 
 # ---- netsh ----
 test fw-netsh-add {first time: add rule with all addresses} -setup {setupFw netsh {} $L} -body {

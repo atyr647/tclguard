@@ -15,8 +15,8 @@ if {[catch {package require sha256}]} {
 namespace eval ::tg::http {
     variable name; variable L; variable ip; variable key; variable buf
     variable ps; variable need; variable nreq; variable upg; variable rp
-    variable good; variable bodySeen; variable eip
-    foreach v {name L ip key buf ps need nreq upg rp good bodySeen eip} { array set $v {} }
+    variable good; variable bodySeen; variable eip; variable nsmall
+    foreach v {name L ip key buf ps need nreq upg rp good bodySeen eip nsmall} { array set $v {} }
     variable secret ""
     variable verified          ;# challenge: key -> expiry ms
     array set verified {}
@@ -38,7 +38,8 @@ proc ::tg::http::prepare {name L} {
 proc ::tg::http::begin {id lname Lc pip pkey} {
     variable name; variable L; variable ip; variable key; variable buf
     variable ps; variable need; variable nreq; variable upg; variable rp
-    variable good; variable bodySeen; variable eip
+    variable good; variable bodySeen; variable eip; variable nsmall
+    set nsmall($id) 0
     set name($id) $lname; set L($id) $Lc; set ip($id) $pip; set key($id) $pkey
     set buf($id) ""; set ps($id) hdr; set need($id) 0; set nreq($id) 0
     set upg($id) none; set rp($id) ""; set good($id) 0; set bodySeen($id) 0; set eip($id) $pip
@@ -48,7 +49,7 @@ proc ::tg::http::begin {id lname Lc pip pkey} {
 }
 
 proc ::tg::http::end {id} {
-    foreach v {name L ip key buf ps need nreq upg rp good bodySeen eip} {
+    foreach v {name L ip key buf ps need nreq upg rp good bodySeen eip nsmall} {
         variable $v
         unset -nocomplain ${v}($id)
     }
@@ -127,7 +128,7 @@ proc ::tg::http::emit {id bytes} {
 # ------------------------------------------------------------ the parser ---
 
 proc ::tg::http::process {id} {
-    variable buf; variable ps; variable need; variable L; variable bodySeen
+    variable buf; variable ps; variable need; variable L; variable bodySeen; variable nsmall
     set Lc $L($id)
     while {[info exists buf($id)]} {
         set st $ps($id)
@@ -139,9 +140,12 @@ proc ::tg::http::process {id} {
                     set ::tg::tcp::dl($id) [expr {$ka > 0 ? [::tg::now] + $ka * 1000 : 0}]
                     return
                 }
-                # Leading CRLFs between requests are tolerated (RFC 9112 2.2).
-                if {[string match "\r\n*" $buf($id)]} {
-                    set buf($id) [string range $buf($id) 2 end]
+                # Leading CRLFs between requests are tolerated (RFC 9112 2.2), but a
+                # handful at most: strip them in one step (no quadratic re-slicing).
+                if {[regexp -indices {^(?:\r\n)+} $buf($id) crlf]} {
+                    set nCr [expr {([lindex $crlf 1] + 1) / 2}]
+                    if {$nCr > 8} { reject $id 400 "too many blank lines before request" 1; return }
+                    set buf($id) [string range $buf($id) [expr {[lindex $crlf 1] + 1}] end]
                     continue
                 }
                 set idx [string first "\r\n\r\n" $buf($id)]
@@ -170,6 +174,7 @@ proc ::tg::http::process {id} {
                 set n [string length $buf($id)]
                 if {$n > $need($id)} { set n $need($id) }
                 emit $id [string range $buf($id) 0 [expr {$n - 1}]]
+                if {![info exists buf($id)]} return          ;# emit closed the connection
                 set buf($id) [string range $buf($id) $n end]
                 incr need($id) -$n
                 set ::tg::tcp::dl($id) [expr {[::tg::now] + [dict get $Lc bodyTimeout] * 1000}]
@@ -190,20 +195,24 @@ proc ::tg::http::process {id} {
                     return
                 }
                 scan $hex %x size
+                # Floods of tiny chunks cost us a buffer copy each; real clients send big ones.
+                if {$size < 16 && [incr nsmall($id)] > 2000} { reject $id 400 "too many tiny chunks" 1; return }
                 incr bodySeen($id) $size
                 if {$bodySeen($id) > [dict get $Lc maxBodyMB] * 1048576} {
                     reject $id 413 "request body too large" 0
                     return
                 }
                 emit $id [string range $buf($id) 0 [expr {$idx + 1}]]
+                if {![info exists buf($id)]} return
                 set buf($id) [string range $buf($id) [expr {$idx + 2}] end]
-                if {$size == 0} { set ps($id) ctrail } else { set ps($id) cdata; set need($id) $size }
+                if {$size == 0} { set ps($id) ctrail; set need($id) 0 } else { set ps($id) cdata; set need($id) $size }
             }
             cdata {
                 if {$buf($id) eq ""} return
                 set n [string length $buf($id)]
                 if {$n > $need($id)} { set n $need($id) }
                 emit $id [string range $buf($id) 0 [expr {$n - 1}]]
+                if {![info exists buf($id)]} return
                 set buf($id) [string range $buf($id) $n end]
                 incr need($id) -$n
                 set ::tg::tcp::dl($id) [expr {[::tg::now] + [dict get $Lc bodyTimeout] * 1000}]
@@ -216,16 +225,28 @@ proc ::tg::http::process {id} {
                     return
                 }
                 emit $id "\r\n"
+                if {![info exists buf($id)]} return
                 set buf($id) [string range $buf($id) 2 end]
                 set ps($id) csize
             }
             ctrail {
                 set idx [string first "\r\n" $buf($id)]
                 if {$idx < 0} {
-                    if {[string length $buf($id)] > 8192} { reject $id 431 "trailers too large" 1 }
+                    if {[string length $buf($id)] > 4096} { reject $id 431 "trailer too large" 1 }
                     return
                 }
+                set line [string range $buf($id) 0 [expr {$idx - 1}]]
+                # Trailers are forwarded, so each one must be a clean header line:
+                # a bare LF or control byte here would let a lenient backend see a
+                # second request hidden inside the trailer section.
+                if {$line ne ""} {
+                    if {[regexp {[\x00-\x08\x0a-\x1f\x7f]} $line] || ![regexp {^[!#$%&'*+.^`|~0-9A-Za-z-]+:[^\x00-\x08\x0a-\x1f\x7f]*$} $line] || [incr need($id)] > 20} {
+                        reject $id 400 "malformed chunk trailer" 1
+                        return
+                    }
+                }
                 emit $id [string range $buf($id) 0 [expr {$idx + 1}]]
+                if {![info exists buf($id)]} return
                 set last [expr {$idx == 0}]
                 set buf($id) [string range $buf($id) [expr {$idx + 2}] end]
                 if {$last} { requestDone $id }
@@ -243,7 +264,9 @@ proc ::tg::http::process {id} {
 }
 
 proc ::tg::http::requestDone {id} {
-    variable ps; variable good; variable eip; variable bodySeen; variable nreq
+    variable ps; variable good; variable eip; variable bodySeen; variable nreq; variable nsmall
+    if {![info exists ps($id)]} return          ;# connection already torn down
+    set nsmall($id) 0
     set ps($id) hdr
     set bodySeen($id) 0
     if {!$good($id) && $nreq($id) >= 3} {
@@ -400,8 +423,8 @@ proc ::tg::http::handleRequest {id block} {
     set out [dict get $d reqline]
     set isUp [dict get $d upgrade]
     if {$isUp} {
-        if {$nreq($id) > 0 || $method ne "GET"} {
-            reject $id 400 "Upgrade only allowed as the first request of a connection" 0
+        if {$nreq($id) > 0 || $method ne "GET" || [dict get $d framing] ne "none"} {
+            reject $id 400 "Upgrade only allowed as the first, body-less GET of a connection" 0
             return stop
         }
     }
@@ -409,6 +432,8 @@ proc ::tg::http::handleRequest {id block} {
         set chain [::tg::ip::norm $peer]
         foreach h [dict get $d headers] {
             lassign $h ln hn hv raw
+            # also catch X_Real_IP style spellings that some backends fold to X-Real-IP
+            set ln [string map {_ -} $ln]
             if {$ln in {x-real-ip forwarded}} continue
             if {$ln eq "x-forwarded-for"} {
                 if {$viaProxy} { set chain "$hv, $chain" }
@@ -431,6 +456,7 @@ proc ::tg::http::handleRequest {id block} {
         default { set ps($id) hdr }
     }
     emit $id $out
+    if {![info exists ps($id)]} { return stop }       ;# emit closed the connection
     if {$isUp} {
         set upg($id) pending
         set ps($id) upgwait
@@ -496,7 +522,7 @@ proc ::tg::http::challengePassed {d ckey Lc} {
     set now [::tg::now]
     if {[info exists verified($ckey)] && $verified($ckey) > $now} { return 1 }
     foreach c [dict get $d cookie] {
-        if {[regexp {(?:^|[; ])tg_ok=([0-9]{1,12})\.([0-9a-f]{32})(?:;|$)} $c -> exp m]} {
+        if {[regexp {(?:^|[; ])tg_ok=([1-9][0-9]{0,11})\.([0-9a-f]{32})(?:;|$)} $c -> exp m]} {
             if {$exp * 1000 > $now && $m eq [mac $ckey $exp]} {
                 if {[array size verified] < 100000} { set verified($ckey) [expr {$exp * 1000}] }
                 return 1
@@ -515,7 +541,7 @@ proc ::tg::http::challenge {id d ckey Lc} {
     set ttl [dict get $Lc challengeTtl]
     set exp [expr {[clock seconds] + $ttl}]
     # Never echo "//host" (open redirect); keep it a same-site absolute path.
-    set target "/[string trimleft [dict get $d target] /]"
+    set target "/[string trimleft [dict get $d target] "/\\"]"
     set cookie "tg_ok=$exp.[mac $ckey $exp]; Path=/; Max-Age=$ttl; HttpOnly; SameSite=Lax"
     respondRaw $id 307 "Temporary Redirect" "" "Location: $target\r\nSet-Cookie: $cookie\r\nCache-Control: no-store\r\n"
 }
