@@ -242,6 +242,37 @@ test fw-netsh-chunks {thousands of bans are split over several rules; netsh neve
     list [expr {$names eq $want}] [expr {[llength $names] >= 3}] $total [expr {$maxips <= 6000}] [expr {$maxcmd < 6500}]
 } -result {1 1 2000 1 1}
 
+test fw-netsh-adapts {when netsh refuses a long rule the chunks are halved until it accepts them} -setup {setupFw netsh {} $L} -body {
+    # a netsh that rejects any remoteip list longer than 1000 characters (usage message, no hint)
+    set ::tg::fw::netshMaxChars 6000
+    rename ::fakeRunner ::fakeRunnerOrig
+    proc ::fakeRunner {argv input} {
+        lappend ::cmds [list $argv $input]
+        foreach a $argv {
+            if {[string match remoteip=* $a] && [string length $a] > 1009} { return [list 1 "usage: add rule ..."] }
+            if {[string match *show* $argv] && [string match *rule* $argv]} { return [list 1 "No rules match"] }
+        }
+        return [list 0 ""]
+    }
+    set ::failIf {}
+    ::tg::fw::sync
+    for {set i 0} {$i < 600} {incr i} { ::tg::ban::add 20.[expr {$i / 250}].[expr {$i % 250}].1 x 600 }
+    set ::cmds {}
+    ::tg::fw::commit
+    rename ::fakeRunner {}
+    rename ::fakeRunnerOrig ::fakeRunner
+    set maxlen 0; set total 0
+    foreach c $::cmds {
+        foreach a [lindex $c 0] { if {[string match remoteip=* $a]} { set maxlen [expr {max($maxlen, [string length $a] - 9)}] } }
+    }
+    set accepted 0
+    foreach c $::cmds { set a [lindex $c 0]; if {"add" in $a || "set" in $a} { foreach x $a { if {[string match remoteip=* $x] && [string length $x] <= 1009} { incr accepted [llength [split [string range $x 9 end] ,]] } } } }
+    list 1 [expr {$::tg::fw::netshMaxChars <= 1500}] [expr {$::tg::fw::lastError eq ""}] [expr {$accepted >= 600}]
+} -cleanup {
+    if {[llength [info commands ::fakeRunnerOrig]]} { catch {rename ::fakeRunner {}}; rename ::fakeRunnerOrig ::fakeRunner }
+    set ::tg::fw::netshMaxChars 6000
+} -result {1 1 1 1}
+
 test fw-netsh-chunks-shrink {rules that are no longer needed are deleted} -setup {setupFw netsh {} $L} -body {
     set ::failIf [list [list {*show rule*} 1 {No rules match}]]
     ::tg::fw::sync

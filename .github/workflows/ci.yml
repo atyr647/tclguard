@@ -223,15 +223,6 @@ jobs:
           ./configure --with-tcl=/opt/homebrew/opt/tcl-tk@8/lib --with-openssl-dir=$(brew --prefix openssl@3) --prefix=$HOME/tclpkgs
           make -j4 && make install
           echo "TCLLIBPATH=$TCLLIBPATH $(dirname $(find $HOME/tclpkgs -path '*tcltls*' -name pkgIndex.tcl | head -1))/.." >> "$GITHUB_ENV"
-      - name: TLS probe (where does setup stop?)
-        continue-on-error: true
-        timeout-minutes: 3
-        run: |
-          set +e
-          $TCLSH tests/platform/tls_probe.tcl
-          echo "probe exit status: $?"
-          ls -la "$HOME/tclpkgs/lib" || true
-          otool -L "$(find $HOME/tclpkgs -name 'libtcltls*.dylib' | head -1)" || true
       - name: Which optional packages are present
         run: |
           # (never load Tk inside tclsh here: on macOS that can block waiting for a window server)
@@ -287,6 +278,16 @@ jobs:
           sleep 10
           screencapture -x "$RUNNER_TEMP/macos-gui.png"
           kill %1 || true
+      - name: TLS probe (where does setup stop?)
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          set +e
+          $TCLSH tests/platform/tls_probe.tcl
+          echo "probe exit status: $?"
+          ls -la "$HOME/tclpkgs/lib" || true
+          otool -L "$(find $HOME/tclpkgs -name 'libtcltls*.dylib' | head -1)" || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:

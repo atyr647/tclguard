@@ -452,7 +452,22 @@ proc ::tg::fw::netshDiscover {} {
     set netshKnown 1
 }
 
+# netsh rejects over-long commands (with a usage message, no hint about the limit, and the limit differs between
+# Windows versions): if a rule is refused, halve the amount of text per rule and try again; the size that works is
+# remembered for the rest of the run.
 proc ::tg::fw::netshApply {} {
+    variable netshMaxChars
+    variable lastError
+    for {set attempt 0} {$attempt < 6} {incr attempt} {
+        if {[netshApplyOnce]} { if {$attempt} { set lastError "" }; return 1 }
+        if {$netshMaxChars <= 300} break
+        set netshMaxChars [expr {max(300, $netshMaxChars / 2)}]
+        ::tg::log::info "Windows Firewall refused a rule; retrying with at most $netshMaxChars characters of addresses per rule"
+    }
+    return 0
+}
+
+proc ::tg::fw::netshApplyOnce {} {
     variable netshDirty
     variable active
     variable netshPerRule

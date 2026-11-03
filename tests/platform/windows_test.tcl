@@ -70,7 +70,7 @@ if {$admin} {
     proc ruleExists {n} { expr {![catch {exec netsh advfirewall firewall show rule name=$n} out] && ![string match "*No rules match*" $out]} }
     check "all $N bans were accepted by netsh (no error)" [expr {$::tg::fw::lastError eq ""}] $::tg::fw::lastError
     set nr [llength $::tg::fw::netshHave]
-    puts "INFO the bans were spread over $nr rules"
+    puts "INFO the bans were spread over $nr rules; netsh accepted at most $::tg::fw::netshMaxChars characters of addresses per rule"
     check "the bans need several rules ($nr)" [expr {$nr >= 4}] $nr
     set missing {}
     for {set k 1} {$k <= $nr} {incr k} { if {![ruleExists [::tg::fw::netshName $k]]} { lappend missing $k } }
