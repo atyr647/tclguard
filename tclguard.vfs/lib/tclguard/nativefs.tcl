@@ -30,6 +30,12 @@ proc ::tg::nfs::copy {src dst} {
     if {[catch {exec cp -- $src $dst 2>@1} out]} { error [string trim $out] }
 }
 
+# Remove a file (Unix; on Windows a running program cannot be deleted and the callers defer instead).
+proc ::tg::nfs::delete {path} {
+    if {[win]} { ps "Remove-Item -LiteralPath [q $path] -Force"; return }
+    if {[catch {exec rm -f -- $path 2>@1} out]} { error [string trim $out] }
+}
+
 # Rename, replacing dst.
 proc ::tg::nfs::move {src dst} {
     if {[win]} {

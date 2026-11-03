@@ -1015,8 +1015,14 @@ proc ::tg::install::removeFile {path} {
         return "not removing '$path': $why"
     }
     if {![file exists $path] && [catch {file type $path}]} { return "" }
+    # The running program first: a mounted starpack looks like a FOLDER to Tcl (found on a real Windows runner: "it is a folder, not a file").
+    if {[sameFile $path [runningExe]]} {
+        if {[isWin]} { return deferred }
+        # Unix lets a running program be unlinked, but Tcl's own `file delete` would act on the files INSIDE the mounted starpack
+        if {[catch {::tg::nfs::delete $path} err]} { return "could not delete $path: $err" }
+        return ""
+    }
     if {[file isdirectory $path] && [file type $path] ne "link"} { return "not removing '$path': it is a folder, not a file" }
-    if {[isWin] && [sameFile $path [runningExe]]} { return deferred }
     if {[catch {file delete -- $path} err]} {
         if {[isWin]} { return deferred }
         return "could not delete $path: $err"

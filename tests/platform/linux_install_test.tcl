@@ -41,6 +41,13 @@ if {[want user]} { rawCall user {
     set err [::tg::install::uninstall {scope user keepData yes}]
     check "uninstall succeeds" [expr {$err eq ""}] $err
     check "everything is gone" [expr {![file exists $bin] && ![file exists $desk] && ![file exists [::tg::autostart::desktopPath]]}]
+
+    # the case that matters to a person: the INSTALLED program removes itself (it is a mounted starpack over its own path, which Tcl sees as a folder)
+    set err [::tg::install::run {scope user}]
+    check "install again for the self-removal test" [expr {$err eq ""}] $err
+    set rc [catch {exec $bin uninstall --user --keep-data 2>@1} out]
+    check "the installed program's own 'uninstall' succeeds" [expr {!$rc}] $out
+    check "...and the program file is gone" [expr {![file exists $bin]}] $out
 } }
 
 if {[want system]} {
