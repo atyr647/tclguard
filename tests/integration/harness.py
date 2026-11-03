@@ -22,6 +22,13 @@ def check(name, cond, detail=""):
 def free_port():
     s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
 
+def have_ipv6():
+    try:
+        s = socket.socket(socket.AF_INET6); s.bind(("::1", 0)); s.close(); return True
+    except OSError: return False
+
+def family(host): return socket.AF_INET6 if ":" in host else socket.AF_INET
+
 def wait_port(port, timeout=8, host="127.0.0.1"):
     t = time.time() + timeout
     while time.time() < t:
@@ -33,13 +40,13 @@ def wait_port(port, timeout=8, host="127.0.0.1"):
 # ------------------------------------------------------------- backends ----
 class HttpBackend:
     """Tiny threaded HTTP/1.1 server that records what it receives."""
-    def __init__(self, port=None, close_after=False):
+    def __init__(self, port=None, close_after=False, host="127.0.0.1"):
         self.close_after = close_after
         self.port = port or free_port()
         self.requests = []          # raw header blocks + bodies
         self.lock = threading.Lock()
-        self.sock = socket.socket(); self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.sock.bind(("127.0.0.1", self.port)); self.sock.listen(256)
+        self.sock = socket.socket(family(host)); self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind((host, self.port)); self.sock.listen(256)
         self.running = True
         threading.Thread(target=self.loop, daemon=True).start()
     def loop(self):
@@ -99,10 +106,10 @@ class HttpBackend:
         except Exception: pass
 
 class TcpEcho:
-    def __init__(self, port=None, speak_first=None):
+    def __init__(self, port=None, speak_first=None, host="127.0.0.1"):
         self.port = port or free_port(); self.received = []; self.speak_first = speak_first
-        self.sock = socket.socket(); self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.sock.bind(("127.0.0.1", self.port)); self.sock.listen(256)
+        self.sock = socket.socket(family(host)); self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind((host, self.port)); self.sock.listen(256)
         self.running = True
         threading.Thread(target=self.loop, daemon=True).start()
     def loop(self):
@@ -129,9 +136,9 @@ class TcpEcho:
         except Exception: pass
 
 class UdpEcho:
-    def __init__(self, port=None):
+    def __init__(self, port=None, host="127.0.0.1"):
         self.port = port or free_port(); self.count = 0; self.sources = set()
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); self.sock.bind(("127.0.0.1", self.port))
+        self.sock = socket.socket(family(host), socket.SOCK_DGRAM); self.sock.bind((host, self.port))
         self.running = True
         threading.Thread(target=self.loop, daemon=True).start()
     def loop(self):

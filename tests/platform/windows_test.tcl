@@ -1,7 +1,7 @@
-# usage: windows_test.tcl ?phase ...?   (no phases = all). Phases: facts netstat firewall autostart locations
+# usage: windows_test.tcl ?phase ...?   (no phases = all). Phases: facts netstat firewall firewallscale autostart locations
 puts "windows_test: starting"; flush stdout
 source [file join [file dirname [info script]] common.tcl]
-set ::phases [expr {[info exists ::argv] && [llength $::argv] ? $::argv : {facts netstat firewall autostart locations}}]
+set ::phases [expr {[info exists ::argv] && [llength $::argv] ? $::argv : {facts netstat firewall firewallscale autostart locations}}]
 proc want {p} { expr {$p in $::phases} }
 puts "Windows platform tests: Tcl [info patchlevel] on $tcl_platform(os) $tcl_platform(osVersion), [info nameofexecutable]"
 
@@ -46,6 +46,53 @@ if {$admin} {
     ::tg::fw::uninstall
 } else {
     puts "SKIP firewall tests: not an administrator"
+}
+}
+if {[want firewallscale]} {
+phase "windows firewall at scale (thousands of bans -> several rules)"
+if {$admin} {
+    freshCfg {firewall netsh allowlist {}}
+    ::tg::fw::init netsh
+    ::tg::ban::registerOnBan ::tg::fw::onBan
+    ::tg::ban::registerOnUnban ::tg::fw::onUnban
+    ::tg::fw::uninstall
+    ::tg::fw::init netsh
+    set N 2500
+    set t0 [clock milliseconds]
+    for {set i 0} {$i < $N} {incr i} {
+        ::tg::ban::add 20.[expr {$i / 60000 + 1}].[expr {($i / 250) % 240 + 1}].[expr {$i % 250 + 1}] "ci scale" 900 manual
+    }
+    set ok [::tg::fw::commit]
+    set ms1 [expr {[clock milliseconds] - $t0}]
+    puts "INFO $N bans -> firewall in ${ms1} ms (lastError: '$::tg::fw::lastError')"
+    proc ruleExists {n} { expr {![catch {exec netsh advfirewall firewall show rule name=$n} out] && ![string match "*No rules match*" $out]} }
+    check "all $N bans were accepted by netsh (no error)" [expr {$::tg::fw::lastError eq ""}] $::tg::fw::lastError
+    check "rule 1 exists" [ruleExists "TclGuard Bans"]
+    check "rule 3 exists (800 addresses per rule)" [ruleExists "TclGuard Bans 3"]
+    check "rule 4 exists (2500 bans need 4 rules)" [ruleExists "TclGuard Bans 4"]
+    check "rule 5 does not exist" [expr {![ruleExists "TclGuard Bans 5"]}]
+    set last 20.[expr {($N - 1) / 60000 + 1}].[expr {(($N - 1) / 250) % 240 + 1}].[expr {($N - 1) % 250 + 1}]
+    set rc [catch {exec netsh advfirewall firewall show rule name="TclGuard Bans 4" verbose} out4]
+    check "the last banned address ($last) is inside the last rule" [string match "*$last*" $out4] [string range $out4 0 200]
+    check "applying 2500 bans finished in a reasonable time (< 120 s)" [expr {$ms1 < 120000}] $ms1
+    # shrink: keep 100 bans, the extra rules must disappear
+    set t0 [clock milliseconds]
+    for {set i 100} {$i < $N} {incr i} {
+        ::tg::ban::remove 20.[expr {$i / 60000 + 1}].[expr {($i / 250) % 240 + 1}].[expr {$i % 250 + 1}]
+    }
+    ::tg::fw::commit
+    puts "INFO shrink to 100 bans in [expr {[clock milliseconds] - $t0}] ms"
+    check "after the bans expire, rule 1 remains" [ruleExists "TclGuard Bans"]
+    check "...and rules 2-4 are removed" [expr {![ruleExists "TclGuard Bans 2"] && ![ruleExists "TclGuard Bans 3"] && ![ruleExists "TclGuard Bans 4"]}]
+    # a new process (restart) finds rules left behind
+    ::tg::ban::add 20.200.1.1 "ci" 900 manual
+    set ::tg::fw::netshHave {}; set ::tg::fw::netshKnown 0
+    ::tg::fw::commit
+    check "after a restart-style rediscovery the existing rule is updated, not duplicated" [expr {![catch {exec netsh advfirewall firewall show rule name=TclGuard\ Bans} o] && [regexp -all {Rule Name:} $o] == 1}] $o
+    ::tg::fw::uninstall
+    check "uninstall removes every TclGuard rule" [expr {![ruleExists "TclGuard Bans"] && ![ruleExists "TclGuard Bans 2"]}]
+} else {
+    puts "SKIP firewall scale test: not an administrator"
 }
 }
 if {[want autostart]} {

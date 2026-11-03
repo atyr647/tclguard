@@ -55,7 +55,9 @@ proc ::tg::udp::start {name L} {
     if {[dict get $L bind] ni {0.0.0.0 ::}} {
         ::tg::log::warn "listener '$name': UDP listeners bind to all interfaces; bind address [dict get $L bind] is ignored (use the firewall to restrict)"
     }
-    if {[catch {udp_open [dict get $L port]} s err]} {
+    # bind :: opens an IPv6 socket (add a second listener with bind 0.0.0.0 for IPv4 clients on the same port)
+    set openCmd [expr {[dict get $L bind] eq "::" ? [list udp_open [dict get $L port] ipv6] : [list udp_open [dict get $L port]]}]
+    if {[catch {{*}$openCmd} s err]} {
         ::tg::log::alert "cannot open UDP port [dict get $L port] for '$name': $s"
         return 0
     }
@@ -68,7 +70,7 @@ proc ::tg::udp::start {name L} {
     set nsess($name) 0
     set byChan($s) [list listen $name]
     fileevent $s readable [list ::tg::udp::inbound $name]
-    ::tg::log::info "listening on UDP [dict get $L port] -> [::tg::joinHostPort [dict get $L backendHost] [dict get $L backendPort]]  \[$name\]"
+    ::tg::log::info "listening on UDP [expr {[dict get $L bind] eq "::" ? "(IPv6) " : ""}][dict get $L port] -> [::tg::joinHostPort [dict get $L backendHost] [dict get $L backendPort]]  \[$name\]"
     return 1
 }
 

@@ -33,7 +33,10 @@ namespace eval ::tg::fw {
     variable table tclguard
     variable ruleName "TclGuard Bans"
     variable netshDirty 0
-    variable maxNetsh 900
+    variable netshPerRule 800        ;# addresses per rule: keeps each netsh command far below the 32 K command-line limit
+    variable netshMaxRules 24       ;# 24 x 800 = 19,200 banned addresses in the Windows Firewall
+    variable netshHave {}           ;# rule names that exist (maintained here; rediscovered at startup)
+    variable netshKnown 0
     variable reinstallAt -100000   ;# last automatic reinstall (ms), rate limiter
     variable pfAnchor com.apple/tclguard   ;# evaluated by the stock macOS ruleset ("anchor com.apple/*")
     variable pfTable tclguard_bans
@@ -426,31 +429,70 @@ proc ::tg::fw::pfApply {ops} {
 
 # ============================================================== netsh =========
 
-proc ::tg::fw::netshApply {} {
+proc ::tg::fw::netshName {i} {
     variable ruleName
+    expr {$i == 1 ? $ruleName : "$ruleName $i"}
+}
+
+# Which of our rules exist already (a previous run may have left some)? They are numbered contiguously from 1,
+# so ask for 1, 2, 3 ... until one is missing. (Parsing "show rule name=all" would break on localized Windows.)
+proc ::tg::fw::netshDiscover {} {
+    variable netshHave
+    variable netshKnown
+    variable netshMaxRules
+    set netsh [which netsh]
+    set netshHave {}
+    for {set i 1} {$i <= $netshMaxRules} {incr i} {
+        lassign [run [list $netsh advfirewall firewall show rule name=[netshName $i]]] rc
+        if {$rc != 0} break
+        lappend netshHave [netshName $i]
+    }
+    set netshKnown 1
+}
+
+proc ::tg::fw::netshApply {} {
     variable netshDirty
     variable active
-    variable maxNetsh
+    variable netshPerRule
+    variable netshMaxRules
+    variable netshHave
+    variable netshKnown
     variable lastError
     set netshDirty 0
-    set keys [lsort [array names active]]
-    if {[llength $keys] > $maxNetsh} {
-        ::tg::log::warn "Windows Firewall rule holds at most $maxNetsh addresses; [expr {[llength $keys] - $maxNetsh}] bans are enforced by TclGuard proxies only"
-        set keys [lrange $keys 0 [expr {$maxNetsh - 1}]]
-    }
     set netsh [which netsh]
-    if {![llength $keys]} {
-        run [list $netsh advfirewall firewall delete rule name=$ruleName]
-        return 1
+    if {!$netshKnown} { netshDiscover }
+    set keys [lsort [array names active]]
+    set cap [expr {$netshPerRule * $netshMaxRules}]
+    if {[llength $keys] > $cap} {
+        ::tg::log::warn "Windows Firewall holds at most $cap banned addresses; [expr {[llength $keys] - $cap}] bans are enforced by TclGuard proxies only"
+        set keys [lrange $keys 0 [expr {$cap - 1}]]
     }
-    set ips [join $keys ,]
-    lassign [run [list $netsh advfirewall firewall show rule name=$ruleName]] rc
-    if {$rc == 0} {
-        lassign [run [list $netsh advfirewall firewall set rule name=$ruleName new remoteip=$ips]] rc out
-    } else {
-        lassign [run [list $netsh advfirewall firewall add rule name=$ruleName dir=in action=block enable=yes profile=any remoteip=$ips]] rc out
+    set n 0
+    for {set i 0} {$i < [llength $keys]} {incr i $netshPerRule} {
+        incr n
+        set name [netshName $n]
+        set ips [join [lrange $keys $i [expr {$i + $netshPerRule - 1}]] ,]
+        # a rule we did not create in this run might exist anyway (never create duplicates: same name = same rule to netsh)
+        if {$name ni $netshHave} {
+            lassign [run [list $netsh advfirewall firewall show rule name=$name]] exists
+            if {$exists == 0} { lappend netshHave $name }
+        }
+        if {$name in $netshHave} {
+            lassign [run [list $netsh advfirewall firewall set rule name=$name new remoteip=$ips]] rc out
+        } else {
+            lassign [run [list $netsh advfirewall firewall add rule name=$name dir=in action=block enable=yes profile=any remoteip=$ips]] rc out
+            if {$rc == 0} { lappend netshHave $name }
+        }
+        if {$rc != 0} { set lastError "netsh failed: [string trim $out]"; return 0 }
     }
-    if {$rc != 0} { set lastError "netsh failed: [string trim $out]"; return 0 }
+    # rules that are not needed any more (bans expired) are removed
+    set needed {}
+    for {set k 1} {$k <= $n} {incr k} { lappend needed [netshName $k] }
+    set keep {}
+    foreach name $netshHave {
+        if {$name in $needed} { lappend keep $name } else { run [list $netsh advfirewall firewall delete rule name=$name] }
+    }
+    set netshHave $keep
     return 1
 }
 
@@ -636,7 +678,12 @@ proc ::tg::fw::uninstall {} {
         nft      { set ok [nftRemove] }
         iptables { set ok [ipsRemove] }
         pf       { set ok [pfRemove] }
-        netsh    { variable ruleName; run [list [which netsh] advfirewall firewall delete rule name=$ruleName] }
+        netsh    {
+            variable netshHave; variable netshKnown
+            if {!$netshKnown} { netshDiscover }
+            foreach name $netshHave { run [list [which netsh] advfirewall firewall delete rule name=$name] }
+            set netshHave {}
+        }
     }
     set installed 0
     set hardened 0

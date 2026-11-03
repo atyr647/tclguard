@@ -490,6 +490,7 @@ proc ::tg::tcp::close_ {id {why ""}} {
         }
     }
     if {$st($id) eq "hs"} { ::tg::tls::forget $id }
+    ::tg::tls::release $cc($id)
     if {$mode($id) eq "http"} { catch {::tg::http::end $id} }
     if {!$noted($id) && [expr {[::tg::now] - $t0($id)}] > 20000 && $bin($id) > 0 && $bout($id) > 0 && $mode($id) ne "http"} {
         ::tg::trust::note $cip($id)

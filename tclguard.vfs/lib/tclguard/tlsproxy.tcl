@@ -25,6 +25,10 @@ namespace eval ::tg::tls {
     array set info {}
     variable files                    ;# listener name -> {cert key}
     array set files {}
+    variable chanConn                 ;# TLS channel -> connection id (server side only)
+    array set chanConn {}
+    variable hsCount                  ;# TLS channel -> handshakes started so far
+    array set hsCount {}
     if {![catch {package require tls}]} { set have 1 }
 }
 
@@ -160,8 +164,29 @@ proc ::tg::tls::importOpts {L cert key} {
 # Without a callback tcltls turns every failed handshake (peer closed early, port scan, ...) into a
 # Tcl background error. We handle failures ourselves in step{}, so keep this silent.
 proc ::tg::tls::callback {event chan args} {
+    variable chanConn
+    variable hsCount
     if {$event eq "verify"} { return [lindex $args 2] }   ;# keep OpenSSL's verdict
+    # A second "handshake start" on an established server connection is a client-initiated TLS 1.2
+    # renegotiation: every one costs a full handshake, and with some TLS libraries (LibreSSL, which is
+    # what the starpack uses) a single connection could demand them without limit. Nobody legitimate
+    # needs it (we never ask for client certificates), so cut the connection off.
+    if {$event eq "info" && [lindex $args 0] eq "handshake" && [lindex $args 1] eq "start" && [info exists chanConn($chan)]} {
+        if {[incr hsCount($chan)] > 1} {
+            set id $chanConn($chan)
+            unset chanConn($chan)
+            after 0 [list ::tg::tls::renegotiated $id]
+        }
+    }
     return
+}
+
+proc ::tg::tls::renegotiated {id} {
+    if {![info exists ::tg::tcp::cc($id)]} return
+    ::tg::stat::incr tlsFail
+    ::tg::log::debug "tls '$::tg::tcp::cl($id)': renegotiation attempt from $::tg::tcp::cip($id): connection closed"
+    ::tg::ban::strike $::tg::tcp::cip($id) 3 "TLS renegotiation on $::tg::tcp::cl($id)"
+    ::tg::tcp::close_ $id "TLS renegotiation refused"
 }
 
 # Import a throwaway channel to make OpenSSL parse and match the key and certificate.
@@ -183,6 +208,8 @@ proc ::tg::tls::start {id chan name L} {
     variable handshaking
     variable hs
     variable files
+    variable chanConn
+    variable hsCount
     set max [expr {[dict exists $L tlsMaxHandshaking] ? [dict get $L tlsMaxHandshaking] : 256}]
     if {$handshaking >= $max} {
         ::tg::stat::incr tlsRefused
@@ -197,6 +224,8 @@ proc ::tg::tls::start {id chan name L} {
         return 0
     }
     incr handshaking
+    set chanConn($chan) $id
+    set hsCount($chan) 0
     set hs($id) [::tg::now]
     set ::tg::tcp::st($id) hs
     set ::tg::tcp::dl($id) [expr {[::tg::now] + [dict get $L tlsHandshakeTimeout] * 1000}]
@@ -266,6 +295,13 @@ proc ::tg::tls::forget {id} {
     variable handshaking
     variable hs
     if {[info exists hs($id)]} { unset hs($id); incr handshaking -1 }
+}
+
+# Drop the per-channel bookkeeping when a connection goes away (called from tcp::close_).
+proc ::tg::tls::release {chan} {
+    variable chanConn
+    variable hsCount
+    unset -nocomplain chanConn($chan) hsCount($chan)
 }
 
 proc ::tg::tls::warnOnce {name msg} {

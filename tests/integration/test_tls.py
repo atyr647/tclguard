@@ -269,6 +269,19 @@ if OPENSSL and os.name != "nt":
         except Exception: pass
         check("client-initiated renegotiation is not serviced repeatedly (<= 3 in 6 s)", n <= 3, n)
         check("...and costs the guard almost no CPU", c1 - c0 < 1.0, c1 - c0)
+
+        # legitimate TLS 1.3 key updates must keep working (they are not renegotiation)
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.execvp(OPENSSL, [OPENSSL, "s_client", "-connect", f"127.0.0.1:{port}", "-tls1_3", "-crlf"])
+        buf = b""
+        pump(1.5)
+        for i in range(3):
+            os.write(fd, b"k\n"); pump(0.3)
+        os.write(fd, b"GET /after-keyupdate HTTP/1.1\nHost: x\nConnection: close\n\n"); pump(2.5)
+        try: os.kill(pid, 9); os.waitpid(pid, 0)
+        except Exception: pass
+        check("TLS 1.3 key updates do not trip the renegotiation guard", b"ok:GET /after-keyupdate" in buf, buf[-200:])
     finally:
         g.cleanup(); be.stop()
 

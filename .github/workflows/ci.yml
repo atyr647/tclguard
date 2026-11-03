@@ -25,6 +25,8 @@ jobs:
         run: cd tests/gui && xvfb-run -a -s "-screen 0 1300x900x24" wish8.6 smoke.tcl
       - name: Integration tests (real sockets)
         run: cd tests/integration && python3 -u test_http.py && python3 -u test_features.py
+      - name: IPv6 end to end (listeners, backends, PROXY protocol, UDP, per-/64 bans)
+        run: cd tests/integration && sudo -E env "PATH=$PATH" python3 -u test_ipv6.py
       - name: TLS termination tests (source, system OpenSSL)
         run: cd tests/integration && python3 -u test_tls.py
       - uses: actions/setup-go@v5
@@ -96,9 +98,9 @@ jobs:
         run: |
           $exe = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
           $failed = @()
-          foreach ($phase in 'facts','netstat','autostart','locations','firewall') {
+          foreach ($phase in 'facts','netstat','autostart','locations','firewall','firewallscale') {
             Write-Host "##[group]platform phase: $phase"
-            pwsh -NoProfile -File tools\ci-bounded.ps1 -Exe $exe -Seconds 90 eval tests\platform\windows_test.tcl $phase
+            pwsh -NoProfile -File tools\ci-bounded.ps1 -Exe $exe -Seconds 180 eval tests\platform\windows_test.tcl $phase
             if ($LASTEXITCODE -ne 0) { $failed += "$phase (exit $LASTEXITCODE)" }
             Write-Host "##[endgroup]"
           }
@@ -110,6 +112,14 @@ jobs:
           Push-Location tests\integration
           python -u test_http.py
           python -u test_features.py
+          Pop-Location
+      - name: IPv6 end to end (starpack, real Windows)
+        timeout-minutes: 8
+        run: |
+          $env:TG_CMD = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
+          Push-Location tests\integration
+          python -u test_ipv6.py
+          if ($LASTEXITCODE -ne 0) { throw "IPv6 tests failed" }
           Pop-Location
       - uses: actions/setup-go@v5
         with:
@@ -206,6 +216,10 @@ jobs:
         run: |
           export TG_CMD="$TCLSH $PWD/tclguard.vfs/main.tcl"
           cd tests/integration && python3 -u test_http.py && python3 -u test_features.py
+      - name: IPv6 end to end
+        run: |
+          export TG_CMD="$TCLSH $PWD/tclguard.vfs/main.tcl"
+          cd tests/integration && python3 -u test_ipv6.py
       - name: TLS termination tests
         run: |
           export PATH="$(brew --prefix openssl@3)/bin:$PATH"
