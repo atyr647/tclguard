@@ -1,10 +1,10 @@
 # Run a program with a hard time limit, capture stdout+stderr to files, always print them.
 # Used by CI so a hang shows what the program printed before it stopped.
-#   pwsh tools/ci-bounded.ps1 -Seconds 120 -Exe path.exe -Arguments 'eval','script.tcl'
+#   pwsh -File tools/ci-bounded.ps1 -Exe path.exe -Seconds 120 eval script.tcl
 param(
     [Parameter(Mandatory)][string]$Exe,
-    [string[]]$Arguments = @(),
-    [int]$Seconds = 120
+    [int]$Seconds = 120,
+    [Parameter(ValueFromRemainingArguments)][string[]]$Arguments = @()
 )
 $tmp = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }
 $id = [guid]::NewGuid().ToString('N').Substring(0, 8)
