@@ -69,7 +69,12 @@ if [ ! -f "$inst/lib/libssl.a" ]; then
     make -j"$(ncpu)" >/dev/null && make install_sw >/dev/null )
 fi
 cd kc
-export KC_TLS_SSLDIR="$inst/lib/pkgconfig"
+if [ "$target" = macos ]; then
+  # tcltls 2.x links static OpenSSL on macOS only from an explicit library directory (not from pkg-config)
+  export KC_TLS_SSLDIR="$inst"
+else
+  export KC_TLS_SSLDIR="$inst/lib/pkgconfig"
+fi
 export KC_TLS_LINKSSLSTATIC=1
 # Generate the kitsh configure script (the fossil tarball ships without it). NOTE: this runs
 # 'kitcreator distclean', so do it before building, never between a build and its output.
