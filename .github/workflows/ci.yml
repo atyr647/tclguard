@@ -14,7 +14,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq tcl8.6 tk8.6 tcllib tcl-udp tcl-thread tcl-vfs xvfb nftables python3 imagemagick
+          sudo apt-get install -y -qq tcl8.6 tk8.6 tcllib tcl-udp tcl-tls tcl-thread tcl-vfs xvfb nftables python3 imagemagick openssl
       - name: Lint
         run: python3 tools/lint_vars.py
       - name: Unit tests
@@ -25,6 +25,18 @@ jobs:
         run: cd tests/gui && xvfb-run -a -s "-screen 0 1300x900x24" wish8.6 smoke.tcl
       - name: Integration tests (real sockets)
         run: cd tests/integration && python3 -u test_http.py && python3 -u test_features.py
+      - name: TLS termination tests (source, system OpenSSL)
+        run: cd tests/integration && python3 -u test_tls.py
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Build Pebble (Let's Encrypt's ACME test server)
+        run: |
+          go install github.com/letsencrypt/pebble/v2/cmd/pebble@latest
+          echo "PEBBLE=$(go env GOPATH)/bin/pebble" >> "$GITHUB_ENV"
+          echo "PEBBLE_TESTDIR=$(ls -d $(go env GOMODCACHE)/github.com/letsencrypt/pebble/v2@*/test | head -1)" >> "$GITHUB_ENV"
+      - name: Automatic certificates (ACME) against Pebble
+        run: cd tests/integration && python3 -u test_acme.py
       - name: Real-kernel nftables tests
         run: sudo python3 tests/kernel/run_kernel_tests.py
       - name: Released starpack
@@ -33,6 +45,10 @@ jobs:
           ( cd releases && sha256sum -c SHA256SUMS --ignore-missing )
           ./releases/tclguard-linux-x86_64 version
           ./releases/tclguard-linux-x86_64 selftest
+      - name: Released starpack - TLS and ACME (its own OpenSSL)
+        run: |
+          export TG_CMD="$PWD/releases/tclguard-linux-x86_64"
+          cd tests/integration && python3 -u test_tls.py && python3 -u test_acme.py
 
   # ---------------------------------------------------------------- Windows ----
   windows:
@@ -67,7 +83,7 @@ jobs:
         run: |
           $exe = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
           $failed = 0
-          foreach ($t in 'ip','config','bans','firewall','monitor','autostart') {
+          foreach ($t in 'ip','config','bans','firewall','monitor','autostart','crypto','https') {
             Write-Host "=== $t.test"
             $out = pwsh -NoProfile -File tools\ci-bounded.ps1 -Exe $exe -Seconds 120 eval "tests\$t.test" 2>&1 | Out-String
             $code = $LASTEXITCODE
@@ -94,6 +110,23 @@ jobs:
           Push-Location tests\integration
           python -u test_http.py
           python -u test_features.py
+          Pop-Location
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: TLS termination and automatic certificates (starpack, real Windows)
+        timeout-minutes: 15
+        run: |
+          $env:PATH = "C:\Program Files\Git\usr\bin;$env:PATH"      # openssl.exe for the test helpers
+          $env:TG_CMD = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
+          go install github.com/letsencrypt/pebble/v2/cmd/pebble@latest
+          $env:PEBBLE = (Join-Path (go env GOPATH) 'bin\pebble.exe')
+          $env:PEBBLE_TESTDIR = (Get-ChildItem (Join-Path (go env GOMODCACHE) 'github.com\letsencrypt\pebble') -Directory -Filter 'v2@*' | Select-Object -First 1).FullName + '\test'
+          Push-Location tests\integration
+          python -u test_tls.py
+          if ($LASTEXITCODE -ne 0) { throw "TLS tests failed" }
+          python -u test_acme.py
+          if ($LASTEXITCODE -ne 0) { throw "ACME tests failed" }
           Pop-Location
       - name: GUI smoke test inside the starpack
         timeout-minutes: 6
@@ -143,6 +176,16 @@ jobs:
           make -j4 && make install
           find $HOME/tclpkgs -name 'pkgIndex.tcl' | head -3
           echo "TCLLIBPATH=$(dirname $(find $HOME/tclpkgs -name pkgIndex.tcl | head -1))/.." >> "$GITHUB_ENV"
+      - name: Build the tls extension (tcltls) against OpenSSL 3
+        run: |
+          brew install openssl@3
+          curl -fsSL -o tcltls.tgz "https://core.tcl-lang.org/tcltls/uv/tcltls-1.7.22.tar.gz"
+          echo "e84e2b7a275ec82c4aaa9d1b1f9786dbe4358c815e917539ffe7f667ff4bc3b4  tcltls.tgz" | shasum -a 256 -c -
+          dir=$(tar tzf tcltls.tgz | head -1 | cut -d/ -f1)
+          tar xzf tcltls.tgz && cd "$dir"
+          ./configure --with-tcl=/opt/homebrew/opt/tcl-tk@8/lib --with-openssl-dir=$(brew --prefix openssl@3) --prefix=$HOME/tclpkgs
+          make -j4 && make install
+          echo "TCLLIBPATH=$TCLLIBPATH $(dirname $(find $HOME/tclpkgs -path '*tcltls*' -name pkgIndex.tcl | head -1))/.." >> "$GITHUB_ENV"
       - name: Which optional packages are present
         run: |
           # (never load Tk inside tclsh here: on macOS that can block waiting for a window server)
@@ -154,7 +197,7 @@ jobs:
           fi
           $TCLSH <<< 'puts "Thread: [package require Thread]"'
       - name: Unit tests
-        run: cd tests && for t in ip config bans firewall monitor autostart; do $TCLSH $t.test; done 2>&1 | grep -E "Total|FAILED"
+        run: cd tests && for t in ip config bans firewall monitor autostart crypto https; do $TCLSH $t.test; done 2>&1 | grep -E "Total|FAILED"
       - name: Self-test (source)
         run: $TCLSH tclguard.vfs/main.tcl selftest
       - name: macOS platform tests (real pfctl, LaunchAgent, netstat)
@@ -163,6 +206,20 @@ jobs:
         run: |
           export TG_CMD="$TCLSH $PWD/tclguard.vfs/main.tcl"
           cd tests/integration && python3 -u test_http.py && python3 -u test_features.py
+      - name: TLS termination tests
+        run: |
+          export PATH="$(brew --prefix openssl@3)/bin:$PATH"
+          $TCLSH <<< 'puts "tls: [package require tls] [tls::version]"'
+          export TG_CMD="$TCLSH $PWD/tclguard.vfs/main.tcl"
+          cd tests/integration && python3 -u test_tls.py
+      - name: Automatic certificates (ACME) against Pebble
+        run: |
+          export PATH="$(brew --prefix openssl@3)/bin:$PATH"
+          go install github.com/letsencrypt/pebble/v2/cmd/pebble@latest
+          export PEBBLE="$(go env GOPATH)/bin/pebble"
+          export PEBBLE_TESTDIR="$(ls -d $(go env GOMODCACHE)/github.com/letsencrypt/pebble/v2@*/test | head -1)"
+          export TG_CMD="$TCLSH $PWD/tclguard.vfs/main.tcl"
+          cd tests/integration && python3 -u test_acme.py
       - name: GUI smoke test (Aqua)
         continue-on-error: true
         timeout-minutes: 5
