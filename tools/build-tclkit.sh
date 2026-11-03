@@ -34,7 +34,10 @@ sed -i \
   -e 's#^url=.*#url="https://core.tcl-lang.org/tcltls/uv/tcltls-${version}.tar.gz"#' \
   -e "s/^sha256=.*/sha256='e84e2b7a275ec82c4aaa9d1b1f9786dbe4358c815e917539ffe7f667ff4bc3b4'/" \
   -e '/patch-tcltls/d' \
+  -e '/libtcl86.a/d' \
   tls/build.sh
+# On Windows tcltls links the Tcl library by bare file name (libtcl86.a); make it findable from the build directory.
+sed -i 's#^function preconfigure() {#function preconfigure() {\n\tcp "${pkgdir}/../tcl/inst/lib/libtcl86.a" . 2>/dev/null || true#' tls/build.sh
 cd "$work"
 inst="$work/openssl-inst"
 if [ ! -f "$inst/lib/libssl.a" ]; then
