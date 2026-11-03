@@ -6,8 +6,13 @@ set priv "?"
 catch {set priv [::tg::fw::isPrivileged]}
 set uid ""
 catch {set uid [exec id -u]}
+# (diagnostics: the process's own command line as Windows recorded it)
+set cmdline ""
+if {$::tcl_platform(platform) eq "windows"} {
+    catch {set cmdline [exec powershell -NoProfile -NonInteractive -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=[pid]').CommandLine"]}
+}
 set fh [open $out.tmp w]
 fconfigure $fh -encoding utf-8
-puts $fh [list privileged $priv uid $uid argv [lrange $::argv 1 end]]
+puts $fh [list privileged $priv uid $uid argv [lrange $::argv 1 end] cmdline [string trim $cmdline]]
 close $fh
 file rename -force $out.tmp $out

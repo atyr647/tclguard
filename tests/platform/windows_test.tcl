@@ -146,7 +146,7 @@ for {set i 0} {$i < 120 && $got eq ""} {incr i} { after 500; if {[file exists $m
 check "the elevated copy started within a minute" [expr {$got ne ""}] "no marker file"
 if {$got ne ""} {
     check "...and it is really elevated" [expr {[dict get $got privileged] == 1}] $got
-    check "...and it got --gui and the configuration path exactly (spaces, apostrophe, accents)" [expr {[dict get $got argv] eq [list --gui --config [file normalize $cfg]]}] $got
+    check "...and it got --gui and the configuration path exactly (spaces, apostrophe, accents)" [expr {[dict get $got argv] eq [list --gui --config [file normalize $cfg]]}] "$got | elevationCommand: [::tg::autostart::elevationCommand] | cfg: $::tg::cfg::path"
 }
 }
 finish
