@@ -125,13 +125,13 @@ macOS's 16,000 ephemeral ports (a measurement limit, not the guard refusing anyo
 | recovery | 257 | 260 |
 
 Every one of those errors is `refused`: **the operating system refused the connection because the listen queue was full**, before the guard could see it (so it cannot ban
-the sender, and `netsh` bans, which only start after a few strikes, do not help). The cause is Tcl's own event loop on Windows, which hands every socket event through a
-helper thread; one core accepts a few hundred new connections per second, where Linux and macOS accept tens of thousands. In the mixed soak the attackers' connection attempts
+the sender, and `netsh` bans, which only start after a few strikes, do not help). The guard accepted only about 140 new connections per second while the connection flood ran (Linux: about 29,000 per second rejected). I believe the cause is Tcl's own event loop
+on Windows, which passes every socket event through a helper thread, but I did not profile it. In the mixed soak the attackers' connection attempts
 keep the queue full and ordinary visitors cannot get in, for as long as the attack lasts; the guard recovers the moment it stops (recovery: 257-260 req/s).
 
 What this means in practice: **on Windows TclGuard is fine for a hobby-sized server under ordinary hostility (scanners, a single abuser, slowloris, malformed requests) but
 it will not hold a determined connection flood**, and the kernel firewall cannot change that. For a Windows host that matters, put the guard on a Linux VPS in front (the setup the
-README recommends) or run it on Linux. I did not find a cheap in-process fix: the limit is how fast Tcl can accept on Windows.
+README recommends) or run it on Linux. I did not find a cheap in-process fix.
 
 ## What this test does not show
 * The namespace run crosses a real kernel network path but still **one machine, one virtual link**: no physical NIC, no interrupt moderation, no packet loss, and
