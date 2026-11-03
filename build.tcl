@@ -115,7 +115,7 @@ if {$opt(check)} {
     set mnt [file join $here dist mnt-check]
     set id [vfs::zip::Mount $opt(out) $mnt]
     set bad 0
-    foreach must {main.tcl lib/tclguard/pkgIndex.tcl lib/tclguard/engine.tcl lib/tclguard/vendor/sha256.tcl} {
+    foreach must {main.tcl lib/tclguard/pkgIndex.tcl lib/tclguard/engine.tcl lib/tclguard/install.tcl lib/tclguard/update.tcl lib/tclguard/vendor/sha256.tcl lib/tclguard/vendor/update-key.pub} {
         if {![file exists [file join $mnt $must]]} { puts "MISSING in payload: $must"; incr bad }
     }
     vfs::zip::Unmount $id $mnt

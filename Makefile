@@ -6,7 +6,7 @@ RUNTIME ?=
 
 help:
 	@echo "make test         unit tests + lint + self-test (no root needed)"
-	@echo "make integration  socket-level tests against real backends (about 3 min)"
+	@echo "make integration  socket-level tests against real backends and a local HTTPS update server (about 3 min)"
 	@echo "make kernel       real nftables tests in network namespaces (needs root)"
 	@echo "make gui-test     drive every GUI flow under a virtual display"
 	@echo "make kit          dist/tclguard.kit  (payload only; run it with any tclkit)"
@@ -25,7 +25,7 @@ selftest:
 	$(TCLSH) tclguard.vfs/main.tcl selftest
 
 integration:
-	cd tests/integration && python3 test_http.py && python3 test_features.py
+	cd tests/integration && python3 test_http.py && python3 test_features.py && python3 test_update.py
 
 kernel:
 	python3 tests/kernel/run_kernel_tests.py

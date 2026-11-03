@@ -52,6 +52,9 @@ namespace eval ::tg::cfg {
         watchPorts          {}
         watchMaxPerIP       150
         watchMaxSynRecv     40
+        updateUrl           ""
+        updateCheck         0
+        caFile              ""
     }
 
     # ---- per-listener defaults ----------------------------------------------
@@ -416,6 +419,10 @@ proc ::tg::cfg::validate {cfg} {
     if {[dict get $G firewall] ni {auto nft iptables pf netsh none}} {
         lappend errs "firewall must be one of: auto nft iptables pf netsh none"
     }
+    if {[dict get $G updateUrl] ne "" && ![regexp {^https://[^\s/]+} [dict get $G updateUrl]]} {
+        lappend errs "updateUrl must be empty (use the official release feed) or an https:// address"
+    }
+    if {![string is boolean -strict [dict get $G updateCheck]]} { lappend errs "updateCheck must be yes/no (1/0)" }
     if {[dict get $G theme] ni {dark light}} { lappend errs "theme must be dark or light" }
     if {[dict get $G logLevel] ni {debug info warn alert}} { lappend errs "logLevel must be debug, info, warn or alert" }
     set steps [dict get $G banSteps]

@@ -1,0 +1,793 @@
+source [file join [file dirname [info script]] helpers.tcl]
+loadmods util config crypto json
+# update.tcl uses ::http only inside fetch, which these tests replace with an in-memory server.
+loadmods update
+set ::tg::log::stderr 0
+freezeClock
+
+# ---- throwaway keys: nothing in this file is, or can be mistaken for, a real release key ------------
+set ::K [::tg::crypto::newKey]
+set ::K2 [::tg::crypto::newKey]
+set ::tg::update::pubKeyText [::tg::update::publicKeyLine $::K]
+
+# a directory that is empty even when an aborted earlier run left one behind
+proc freshDir {name} {
+    file delete -force [file join [temporaryDirectory] $name]
+    makeDirectory $name
+}
+proc writeBytes {path data} {
+    file mkdir [file dirname $path]
+    set fh [open $path wb]; puts -nonewline $fh $data; close $fh
+}
+proc readBytes {path} { set fh [open $path rb]; set d [read $fh]; close $fh; return $d }
+proc sha {data} { binary scan [::tg::crypto::sha256 $data] H* h; return $h }
+
+# A fake "new program": a shell script that answers `version` (and can misbehave).
+proc fakeProgram {version {mode ok}} {
+    switch -- $mode {
+        ok      { set body "if \[ \"\$1\" = version \]; then echo \"TclGuard $version (Tcl 8.6.14)\"; fi" }
+        fail    { set body "echo broken >&2; exit 3" }
+        hang    { set body "sleep 30" }
+        silent  { set body "exit 0" }
+        flood   { set body "yes AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA | head -c 3000000" }
+    }
+    return "#!/bin/sh\n$body\n# padding $version [string repeat x 200]\n"
+}
+
+# ---- in-memory release server: replaces the HTTPS fetch --------------------------------------------
+set ::served {}      ;# url -> bytes, or {error message}
+set ::fetched {}
+proc ::tg::update::fetch {url args} {
+    array set o {-maxbytes 262144 -file "" -progress ""}
+    array set o $args
+    lappend ::fetched $url
+    ::tg::update::checkUrl $url
+    if {![dict exists $::served $url]} { error "the server answered 404 for $url" }
+    set v [dict get $::served $url]
+    if {[string match "ERR *" $v]} { error [string range $v 4 end] }
+    if {[string length $v] > $o(-maxbytes)} { error "the download is larger than the allowed $o(-maxbytes) bytes" }
+    if {$o(-progress) ne ""} { {*}$o(-progress) download [string length $v] [string length $v] }
+    if {$o(-file) ne ""} { writeBytes $o(-file) $v; return [dict create code 200 url $url body "" size [string length $v]] }
+    dict create code 200 url $url body $v size [string length $v]
+}
+
+set ::feed https://updates.example.test/manifest.json
+
+# Publish a release in the fake server. files: dict platform -> program bytes.
+proc publish {version programBytes args} {
+    array set o {-key "" -tamper 0 -sigbad 0 -extra {} -platform "" -url "" -size "" -sha "" -min "" -sign 1 -name tclguard-test}
+    array set o $args
+    if {$o(-key) eq ""} { set o(-key) $::K }
+    if {$o(-platform) eq ""} { set o(-platform) [::tg::update::platformKey] }
+    set binUrl [expr {$o(-url) ne "" ? $o(-url) : "https://updates.example.test/dl/$o(-name)-$version"}]
+    set size [string length $programBytes]
+    if {$o(-size) ne ""} { set size $o(-size) }
+    set hash [sha $programBytes]
+    if {$o(-sha) ne ""} { set hash $o(-sha) }
+    set pairs [list version [::tg::json::quote $version] issued [::tg::json::quote 1700000000] notes [::tg::json::quote "Fixes things.\nSecond line."]]
+    if {$o(-min) ne ""} { lappend pairs min [::tg::json::quote $o(-min)] }
+    lappend pairs files [::tg::json::object $o(-platform) [::tg::json::object \
+        name [::tg::json::quote $o(-name)-$version] url [::tg::json::quote $binUrl] sha256 [::tg::json::quote $hash] size $size] {*}$o(-extra)]
+    set manifest "[::tg::json::object {*}$pairs]\n"
+    set sig [::tg::update::signBytes $o(-key) $manifest]
+    if {$o(-sigbad)} { set sig [string replace $sig 5 5 [expr {[string index $sig 5] eq "A" ? "B" : "A"}]] }
+    if {$o(-tamper)} { set manifest [string map [list Fixes Hacks] $manifest] }
+    set ::served [dict create $::feed $manifest]
+    if {$o(-sign)} { dict set ::served $::feed.sig "$sig\n" }
+    dict set ::served $binUrl $programBytes
+    return $manifest
+}
+
+# A target directory holding "the installed program" (a fake script printing version 1.0.0).
+proc target {} {
+    set d [freshDir tg[incr ::tn]]
+    file delete -force $d/app $d/app.previous
+    foreach f [glob -nocomplain -directory $d *] { file delete -force $f }
+    writeBytes $d/app [fakeProgram 1.0.0]
+    file attributes $d/app -permissions 0750
+    return $d
+}
+set ::tn 0
+proc listing {d} { lsort [lmap f [glob -nocomplain -directory $d *] {file tail $f}] }
+
+proc resetEnv {} {
+    set ::fetched {}
+    set ::tg::update::pubKeyText [::tg::update::publicKeyLine $::K]
+    set ::tg::update::targetOverride ""
+    set ::tg::update::runTimeout 20000
+    set ::tg::update::stateFileOverride [file join [temporaryDirectory] state-[incr ::stn].json]
+    file delete -force $::tg::update::stateFileOverride
+    set ::tg::clockSkew 0
+    set ::tg::cfg::current [::tg::cfg::new]
+}
+set ::stn 0
+
+# ================================================================================== versions ====
+
+test upd-version-compare {versions compare numerically, not as text} -body {
+    set r {}
+    foreach {a b} {1.10 1.9  1.9 1.10  1.0.0 1.0.0  1.0 1.0.0  1.2.3 1.2.4  2.0.0 1.99.99  1.0.0 1.0.0-rc.1  1.0.0-rc.2 1.0.0-rc.10
+                   1.0.0-alpha 1.0.0-beta  1.0.0-1 1.0.0-a  1.0.0+b1 1.0.0+b2  1.0.0-rc 1.0.0-rc.1  0.9 1.0  10.0.0 9.9.9} {
+        lappend r [::tg::update::compareVersions $a $b]
+    }
+    set r
+} -result {1 -1 0 0 -1 1 1 -1 -1 -1 0 -1 -1 1}
+
+test upd-version-invalid {things that are not versions are rejected} -body {
+    set r {}
+    foreach v [list "" v1.2 1.2.3.4.5 1..2 a.b 1.2.x -1.0 1.0.0- "1.0 .0" "1.2.3; rm -rf /" "1.0.0-\u00e9" 9999999999.0 [string repeat 1 70] "1.0.0\n" " 1.0.0"] {
+        lappend r [::tg::update::isVersion $v]
+    }
+    lappend r [::tg::update::isVersion 1] [::tg::update::isVersion 1.2.3.4] [::tg::update::isVersion 1.0.0-rc.1+b5]
+    set r
+} -result {0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 1 1}
+# note: "1" alone is a valid (one-component) version, hence the first list entry check below
+test upd-version-single {a bare number is a version} -body { ::tg::update::compareVersions 2 1.9.9 } -result 1
+
+# ================================================================================== platform ====
+
+test upd-platform-key {operating system and machine map to stable keys} -body {
+    list [::tg::update::platformKey Linux x86_64 8] [::tg::update::platformKey Linux aarch64 8] [::tg::update::platformKey "Windows NT" intel 8] \
+         [::tg::update::platformKey "Windows NT" intel 4] [::tg::update::platformKey "Windows NT" amd64 8] [::tg::update::platformKey Darwin arm64 8] \
+         [::tg::update::platformKey Darwin x86_64 8] [::tg::update::platformKey FreeBSD amd64 8] [::tg::update::platformKey Linux riscv64 8]
+} -result {linux-x86_64 linux-arm64 windows-x86_64 windows-x86 windows-x86_64 macos-arm64 macos-x86_64 freebsd-x86_64 linux-riscv64}
+
+test upd-flavor {the console build asks for the console download} -setup {
+    set d [freshDir flv]
+} -body {
+    writeBytes $d/tclguard-windows-x86_64-console.exe x
+    writeBytes $d/tclguard.exe x
+    set a [::tg::update::flavor $d/tclguard-windows-x86_64-console.exe]
+    set b [::tg::update::flavor $d/tclguard.exe]
+    writeBytes $d/install.json {{"flavor":"console"}}
+    set c [::tg::update::flavor $d/tclguard.exe]
+    list $a $b $c
+} -result {console gui console}
+
+# ================================================================================ public key ====
+
+test upd-key-placeholder {the shipped placeholder is recognised as unset} -setup {
+    set ::tg::update::pubKeyText ""
+} -body {
+    set k [::tg::update::publicKey]
+    list [dict get $k state] [dict exists $k x]
+} -cleanup {resetEnv} -result {unset 0}
+
+test upd-key-shipped-file-is-placeholder {the key file in the repo is the clearly marked UNSET placeholder} -body {
+    set t [readBytes [file join $::root tclguard.vfs lib tclguard vendor update-key.pub]]
+    list [string match "*UNSET*" $t] [regexp -line {^tgpub1:UNSET$} $t]
+} -result {1 1}
+
+test upd-key-valid {a tgpub1 line and a PEM public key both load, with a stable fingerprint} -body {
+    resetEnv
+    set a [::tg::update::publicKey]
+    set ::tg::update::pubKeyText "# comment\n\n[::tg::update::publicKeyLine $::K]\n"
+    set b [::tg::update::publicKey]
+    set ::tg::update::pubKeyText [::tg::crypto::pem "PUBLIC KEY" [::tg::crypto::spki $::K]]
+    set c [::tg::update::publicKey]
+    list [dict get $a state] [expr {[dict get $a x] == [dict get $::K x] && [dict get $a y] == [dict get $::K y]}] \
+         [expr {[dict get $a fingerprint] eq [dict get $b fingerprint] && [dict get $b fingerprint] eq [dict get $c fingerprint]}] \
+         [regexp {^([0-9a-f]{4} ){7}[0-9a-f]{4}$} [dict get $a fingerprint]]
+} -cleanup {resetEnv} -result {ok 1 1 1}
+
+test upd-key-malformed {broken key files are errors, never silently "unset" or accepted} -body {
+    set r {}
+    set good [::tg::update::publicKeyLine $::K]
+    foreach t [list "" "# only comments" "tgpub1:" "tgpub1:abc" "tgpub2:[string range $good 7 end]" "garbage" \
+               "tgpub1:[string repeat A 87]" "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----"] {
+        set ::tg::update::pubKeyText $t
+        # "" falls back to the file: use a sentinel instead
+        if {$t eq ""} { set ::tg::update::pubKeyText "\n" }
+        lappend r [catch {::tg::update::publicKey} e]
+    }
+    # a well-formed point that is not on the curve
+    set pt [binary format ca*a* 4 [::tg::crypto::intToBytes 5 32] [::tg::crypto::intToBytes 7 32]]
+    set ::tg::update::pubKeyText "tgpub1:[::tg::crypto::b64u $pt]"
+    lappend r [catch {::tg::update::publicKey} e] [string match "*not a point on the P-256 curve*" $e]
+    set r
+} -cleanup {resetEnv} -result {1 1 1 1 1 1 1 1 1 1}
+
+# ============================================================================== keygen =====
+
+test upd-keygen {keygen writes a private key with owner-only permissions, refuses to overwrite, prints a usable public key} -setup {
+    set d [freshDir kg]
+    file delete -force $d/k.pem
+} -body {
+    set r [::tg::update::keygen $d/k.pem]
+    set again [::tg::update::keygen $d/k.pem]
+    set key [::tg::crypto::keyFromPem [readBytes $d/k.pem]]
+    set ::tg::update::pubKeyText [dict get $r publicKey]
+    set pk [::tg::update::publicKey]
+    set sig [::tg::update::signBytes $key "m"]
+    list [dict get $r ok] [file attributes $d/k.pem -permissions] [dict get $again ok] [string match "*already exists*" [dict get $again error]] \
+         [string match "tgpub1:*" [dict get $r publicKey]] [::tg::update::verifyBytes [dict get $pk x] [dict get $pk y] m $sig] \
+         [expr {[dict get $r fingerprint] eq [dict get $pk fingerprint]}] [string match "-----BEGIN EC PRIVATE KEY-----*" [readBytes $d/k.pem]]
+} -cleanup {resetEnv} -result {1 00600 0 1 1 1 1 1}
+
+test upd-keygen-bad-path {keygen without a name or into a missing folder reports an error} -body {
+    list [dict get [::tg::update::keygen ""] ok] [dict get [::tg::update::keygen /nonexistent-dir-xyz/k.pem] ok]
+} -result {0 0}
+
+test upd-load-private-key {the release tool reads the key from a file, from the environment, or as PEM text} -setup {
+    set d [freshDir lk]
+    writeBytes $d/k.pem [::tg::crypto::keyToPem $::K]
+    unset -nocomplain ::env(TG_RELEASE_KEY)
+} -body {
+    set a [::tg::update::loadPrivateKey $d/k.pem]
+    set ::env(TG_RELEASE_KEY) $d/k.pem
+    set b [::tg::update::loadPrivateKey]
+    set ::env(TG_RELEASE_KEY) [::tg::crypto::keyToPem $::K]
+    set c [::tg::update::loadPrivateKey]
+    unset ::env(TG_RELEASE_KEY)
+    list [expr {[dict get $a d] == [dict get $::K d] && [dict get $b d] == [dict get $::K d] && [dict get $c d] == [dict get $::K d]}] \
+         [catch {::tg::update::loadPrivateKey}] [catch {::tg::update::loadPrivateKey $d/missing.pem}]
+} -cleanup {unset -nocomplain ::env(TG_RELEASE_KEY)} -result {1 1 1}
+
+# ============================================================================= signatures ====
+
+test upd-signature {good, wrong key, tampered bytes and malformed signatures} -body {
+    set pk [::tg::update::publicKey]
+    set x [dict get $pk x]; set y [dict get $pk y]
+    set msg "{\"version\":\"1.1.0\"}\n"
+    set sig [::tg::update::signBytes $::K $msg]
+    set other [::tg::update::signBytes $::K2 $msg]
+    set r {}
+    lappend r [::tg::update::verifyBytes $x $y $msg $sig]
+    lappend r [::tg::update::verifyBytes $x $y $msg "$sig\n"]
+    lappend r [::tg::update::verifyBytes $x $y $msg $other]
+    lappend r [::tg::update::verifyBytes $x $y "${msg} " $sig]
+    lappend r [::tg::update::verifyBytes $x $y [string map {1.1.0 1.1.1} $msg] $sig]
+    lappend r [::tg::update::verifyBytes $x $y $msg [string range $sig 0 end-1]]
+    lappend r [::tg::update::verifyBytes $x $y $msg "${sig}A"]
+    lappend r [::tg::update::verifyBytes $x $y $msg ""]
+    lappend r [::tg::update::verifyBytes $x $y $msg [string repeat A 86]]
+    lappend r [::tg::update::verifyBytes $x $y $msg [string repeat ! 86]]
+    lappend r [::tg::update::verifyBytes $x $y $msg [binary encode base64 [string repeat x 64]]]
+    # r and s of zero / out of range
+    lappend r [::tg::update::verifyBytes $x $y $msg [::tg::crypto::b64u [string repeat \x00 64]]]
+    lappend r [::tg::update::verifyBytes $x $y $msg [::tg::crypto::b64u [string repeat \xff 64]]]
+    set r
+} -result {1 1 0 0 0 0 0 0 0 0 0 0 0}
+
+test upd-signature-all-single-bit-flips {flipping any one character of a signature invalidates it} -body {
+    set pk [::tg::update::publicKey]
+    set msg "manifest"
+    set sig [::tg::update::signBytes $::K $msg]
+    set bad 0
+    for {set i 0} {$i < 86} {incr i 9} {
+        set c [string index $sig $i]
+        set f [string replace $sig $i $i [expr {$c eq "A" ? "B" : "A"}]]
+        if {[::tg::update::verifyBytes [dict get $pk x] [dict get $pk y] $msg $f]} { incr bad }
+    }
+    set bad
+} -result 0
+
+# ================================================================================= manifest ====
+
+proc manifestWith {args} {
+    set files [dict create linux-x86_64 [dict create name tclguard-1.1.0 url https://example.test/tclguard sha256 [string repeat a 64] size 100]]
+    set m [dict create version 1.1.0 issued 1700000000 notes "n" files $files]
+    foreach {k v} $args { dict set m {*}$k $v }
+    return $m
+}
+proc bad {m} { catch {::tg::update::validateManifest $m} e; return $e }
+
+test upd-manifest-valid {a well-formed manifest passes and is normalised} -body {
+    set m [::tg::update::validateManifest [manifestWith {files linux-x86_64 sha256} [string repeat A 64]]]
+    list [dict get $m version] [dict get [dict get $m files linux-x86_64] sha256] [dict get [dict get $m files linux-x86_64] size] [dict get $m min]
+} -result [list 1.1.0 [string repeat a 64] 100 {}]
+
+proc mutated {label args} {
+    set m [manifestWith]
+    switch -- $label {
+        noversion { dict unset m version }
+        longnotes { dict set m notes [string repeat x 9000] }
+        badplat   { dict set m files {UP/PER} [dict get $m files linux-x86_64] }
+        default   { foreach {k v} $args { dict set m {*}$k $v } }
+    }
+    return $m
+}
+
+test upd-manifest-rejects {every malformed field is rejected} -body {
+    set r {}
+    foreach {label args} {
+        noversion   {}
+        badversion  {version 1.x}
+        badissued   {issued yesterday}
+        badmin      {min banana}
+        nonurl      {{files linux-x86_64 url} ftp://example.test/x}
+        httpurl     {{files linux-x86_64 url} http://example.test/x}
+        spaceurl    {{files linux-x86_64 url} "https://example.test/a b"}
+        userinfo    {{files linux-x86_64 url} https://trusted.example@evil.test/x}
+        fileurl     {{files linux-x86_64 url} file:///etc/passwd}
+        shortsha    {{files linux-x86_64 sha256} abc}
+        nothex      {{files linux-x86_64 sha256} zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz}
+        zerosize    {{files linux-x86_64 size} 0}
+        negsize     {{files linux-x86_64 size} -5}
+        bigsize     {{files linux-x86_64 size} 67108865}
+        hugesize    {{files linux-x86_64 size} 99999999999999}
+        textsize    {{files linux-x86_64 size} lots}
+        slashname   {{files linux-x86_64 name} ../../etc/passwd}
+        dotname     {{files linux-x86_64 name} ..}
+        winname     {{files linux-x86_64 name} {C:\evil.exe}}
+        emptyname   {{files linux-x86_64 name} {}}
+        badplat     {}
+        longnotes   {}
+    } {
+        set e [bad [mutated $label {*}$args]]
+        lappend r [expr {$e eq "" ? "ACCEPTED:$label" : "ok"}]
+    }
+    lsort -unique $r
+} -result ok
+
+test upd-manifest-not-objects {files and entries that are not objects are rejected} -body {
+    list [string match "*not a JSON object*" [bad notadict]] [string match "*lacks*" [bad [dict create version 1.0.1]]] \
+         [string match "*'files' is not an object*" [bad [manifestWith files "a b c"]]] \
+         [string match "*not an object*" [bad [manifestWith {files linux-x86_64} "x"]]] \
+         [string match "*lacks 'url'*" [bad [manifestWith {files linux-x86_64} {name a sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa size 5}]]]
+} -result {1 1 1 1 1}
+
+test upd-manifest-size-limit {a manifest over 256 KB is refused before parsing} -body {
+    set big "{\"version\":\"1.0.1\",\"issued\":\"1\",\"notes\":\"[string repeat x 262144]\",\"files\":{}}"
+    list [catch {::tg::update::parseManifest $big} e] [string match "*larger than*" $e] [catch {::tg::update::parseManifest "\{ broken"}] \
+         [catch {::tg::update::parseManifest "\[1,2\]"}]
+} -result {1 1 1 1}
+
+test upd-manifest-notes-sanitised {control characters are stripped from the notes shown to the user} -body {
+    set m [::tg::update::validateManifest [manifestWith notes "a\x1b\[31mred\x00\nb\tc"]]
+    dict get $m notes
+} -result "a\[31mred\nb\tc"
+
+proc manifestOther {} {
+    set m [manifestWith]
+    dict set m files linux-riscv64 [dict get $m files linux-x86_64]
+    dict unset m files linux-x86_64
+    return $m
+}
+
+test upd-pickfile {the download for this platform is chosen; none gives a clear error} -body {
+    set key [::tg::update::platformKey]
+    set m [::tg::update::validateManifest [manifestWith]]
+    set f [dict get $m files linux-x86_64]
+    set m2 [::tg::update::validateManifest [manifestWith [list files $key] $f [list files $key-console] [dict replace $f name console-build]]]
+    list [dict get [::tg::update::pickFile $m2 /opt/tclguard] name] [dict get [::tg::update::pickFile $m2 /opt/tclguard-windows-x86_64-console.exe] name] \
+         [catch {::tg::update::pickFile [::tg::update::validateManifest [manifestOther]] /opt/x} e] [string match "*no download for*" $e]
+} -result {tclguard-1.1.0 console-build 1 1}
+
+test upd-build-manifest {the release tool's manifest round-trips and covers exactly the release files} -setup {
+    set d [freshDir rel]
+    foreach f [glob -nocomplain -directory $d *] { file delete -force $f }
+    writeBytes $d/tclguard-linux-x86_64 "linux bytes"
+    writeBytes $d/tclguard-windows-x86_64.exe "windows bytes"
+    writeBytes $d/tclguard-windows-x86_64-console.exe "console bytes"
+    writeBytes $d/tclguard-macos-arm64 "mac bytes"
+    writeBytes $d/SHA256SUMS "ignored"
+    writeBytes $d/README.md "ignored"
+    writeBytes $d/tclguard-linux-x86_64.sig "ignored"
+    writeBytes $d/tclguard-freebsd-x86_64 "ignored"
+} -body {
+    set text [::tg::update::buildManifest $d 1.2.0 -notes "Release notes \"quoted\"" -min 1.0.0 -issued 1700000001]
+    set m [::tg::update::parseManifest $text]
+    set files [dict get $m files]
+    list [lsort [dict keys $files]] [dict get $files linux-x86_64 sha256] [expr {[dict get $files linux-x86_64 sha256] eq [sha "linux bytes"]}] \
+         [dict get $files windows-x86_64-console size] [dict get $files macos-arm64 url] [dict get $m notes] [dict get $m min] [dict get $m issued] \
+         [string index $text end]
+} -result [list {linux-x86_64 macos-arm64 windows-x86_64 windows-x86_64-console} [sha "linux bytes"] 1 13 \
+    https://github.com/atyr647/tclguard/releases/download/v1.2.0/tclguard-macos-arm64 {Release notes "quoted"} 1.0.0 1700000001 "\n"]
+
+test upd-build-manifest-errors {no release files, bad version, empty files are refused} -setup {
+    set d [freshDir rel2]
+    foreach f [glob -nocomplain -directory $d *] { file delete -force $f }
+} -body {
+    set a [catch {::tg::update::buildManifest $d 1.0.1} e1]
+    writeBytes $d/tclguard-linux-x86_64 ""
+    set b [catch {::tg::update::buildManifest $d 1.0.1} e2]
+    writeBytes $d/tclguard-linux-x86_64 "x"
+    set c [catch {::tg::update::buildManifest $d "one point two"} e3]
+    list $a [string match "*no release files*" $e1] $b [string match "*size 0*" $e2] $c
+} -result {1 1 1 1 1}
+
+# ===================================================================== check (manifest/sig) ====
+
+test upd-check-available {a newer, correctly signed release is reported with notes} -setup {resetEnv} -body {
+    publish 1.1.0 [fakeProgram 1.1.0]
+    set r [::tg::update::check [dict create url $::feed]]
+    list [dict get $r ok] [dict get $r status] [dict get $r latest] [dict get $r verified] [dict get $r notes] [dict get [dict get $r file] size] [dict get $r needsManual] $::fetched
+} -result [list 1 available 1.1.0 1 "Fixes things.\nSecond line." [string length [fakeProgram 1.1.0]] 0 {https://updates.example.test/manifest.json https://updates.example.test/manifest.json.sig}]
+
+test upd-check-statuses {up to date, ahead of the feed, no file for this platform, too old to self-update} -setup {resetEnv} -body {
+    set r {}
+    publish 1.0.0 [fakeProgram 1.0.0]
+    lappend r [dict get [::tg::update::check [dict create url $::feed]] status]
+    publish 0.9.0 [fakeProgram 0.9.0]
+    lappend r [dict get [::tg::update::check [dict create url $::feed]] status]
+    publish 1.5.0 [fakeProgram 1.5.0] -platform linux-riscv64
+    set c [::tg::update::check [dict create url $::feed]]
+    lappend r [dict get $c status] [dict get $c ok] [string match "*no download for*" [dict get $c error]]
+    publish 3.0.0 [fakeProgram 3.0.0] -min 2.0.0
+    set c [::tg::update::check [dict create url $::feed]]
+    lappend r [dict get $c status] [dict get $c needsManual]
+    set r
+} -result {uptodate ahead nofile 1 1 available 1}
+
+proc checkSummary {} {
+    set c [::tg::update::check [dict create url $::feed]]
+    list [dict get $c ok] [dict get $c status] [dict exists $c latest] [dict exists $c notes] [dict get $c verified]
+}
+
+test upd-check-bad-signature {a manifest with a wrong, tampered or missing signature is refused and none of its content is reported} -setup {resetEnv} -body {
+    set r {}
+    publish 1.1.0 [fakeProgram 1.1.0] -sigbad 1
+    lappend r [checkSummary]
+    publish 1.1.0 [fakeProgram 1.1.0] -tamper 1
+    lappend r [checkSummary]
+    publish 1.1.0 [fakeProgram 1.1.0] -key $::K2
+    lappend r [checkSummary]
+    publish 1.1.0 [fakeProgram 1.1.0] -sign 0
+    lappend r [checkSummary]
+    set r
+} -result {{0 error 0 0 0} {0 error 0 0 0} {0 error 0 0 0} {0 error 0 0 0}}
+
+test upd-check-error-messages {the reason is stated: unsigned versus invalid} -setup {resetEnv} -body {
+    publish 1.1.0 [fakeProgram 1.1.0] -sign 0
+    set a [dict get [::tg::update::check [dict create url $::feed]] error]
+    publish 1.1.0 [fakeProgram 1.1.0] -tamper 1
+    set b [dict get [::tg::update::check [dict create url $::feed]] error]
+    list [string match "*not signed*" $a] [string match "*signature is NOT valid*" $b]
+} -result {1 1}
+
+test upd-check-unset-key {with no embedded key, check works but marks everything unverified} -setup {
+    resetEnv
+    set ::tg::update::pubKeyText "tgpub1:UNSET"
+} -body {
+    publish 1.1.0 [fakeProgram 1.1.0] -sign 0
+    set c [::tg::update::check [dict create url $::feed]]
+    list [dict get $c ok] [dict get $c status] [dict get $c verified] [dict get $c keyState] $::fetched
+} -cleanup {resetEnv} -result {1 available 0 unset https://updates.example.test/manifest.json}
+
+test upd-check-http-refused {a non-https feed address is refused before any request} -setup {resetEnv} -body {
+    set c [::tg::update::check [dict create url http://updates.example.test/manifest.json]]
+    list [dict get $c ok] [string match "*non-HTTPS*" [dict get $c error]] $::fetched
+} -result {0 1 {}}
+
+test upd-check-feed-from-config {updateUrl in the configuration is used; the default is the GitHub feed} -setup {resetEnv} -body {
+    set a [::tg::update::feedUrl {}]
+    dict set ::tg::cfg::current general updateUrl https://mirror.example.test/m.json
+    set b [::tg::update::feedUrl {}]
+    set c [::tg::update::feedUrl {url https://explicit.example.test/m.json}]
+    list $a $b $c
+} -cleanup {resetEnv} -result {https://github.com/atyr647/tclguard/releases/latest/download/manifest.json https://mirror.example.test/m.json https://explicit.example.test/m.json}
+
+test upd-check-validates-config-url {the configuration validator rejects non-https update URLs} -body {
+    set c [::tg::cfg::new]
+    dict set c general updateUrl http://evil.example/m.json
+    set e1 [lindex [::tg::cfg::validate $c] 0]
+    dict set c general updateUrl https://ok.example/m.json
+    set e2 [lindex [::tg::cfg::validate $c] 0]
+    list [llength $e1] [string match "updateUrl must*" [lindex $e1 0]] [llength $e2]
+} -result {1 1 0}
+
+test upd-check-records-state {the result of a check is remembered for the status and the GUI} -setup {resetEnv} -body {
+    publish 1.1.0 [fakeProgram 1.1.0]
+    ::tg::update::check [dict create url $::feed]
+    set s [::tg::update::status]
+    list [dict get $s lastCheck] [dict get $s lastStatus] [dict get $s latest] [dict get $s pending] [dict get $s lastVerified] [dict get $s keyState] \
+         [string match "*update pending: yes: 1.1.0*" [::tg::update::statusText]]
+} -result [list 1700000000 available 1.1.0 1 1 ok 1]
+
+# ================================================================================== apply ====
+
+proc applyTo {d {extra {}}} {
+    ::tg::update::apply [dict merge [dict create url $::feed target $d/app] $extra]
+}
+
+test upd-apply-good {end to end: verified, swapped in, old kept as .previous, executable bit kept, no temp files} -setup {resetEnv; set d [target]} -body {
+    set new [fakeProgram 1.1.0]
+    publish 1.1.0 $new
+    set steps {}
+    set r [applyTo $d [dict create progress [list ::apply {{phase done total} {lappend ::steps $phase}}]]]
+    list [dict get $r ok] [dict get $r status] [dict get $r old] [dict get $r new] [expr {[readBytes $d/app] eq $new}] \
+         [expr {[readBytes $d/app.previous] eq [fakeProgram 1.0.0]}] [file attributes $d/app -permissions] [listing $d] \
+         [lsort -unique $::steps] [dict get [::tg::update::status] previousVersion]
+} -result {1 applied 1.0.0 1.1.0 1 1 00750 {app app.previous} {check download hash install verify} 1.0.0}
+
+test upd-apply-refuses-unset-key {with the placeholder key apply refuses before touching the network} -setup {
+    resetEnv; set d [target]
+    set ::tg::update::pubKeyText "tgpub1:UNSET"
+} -body {
+    publish 1.1.0 [fakeProgram 1.1.0]
+    set r [applyTo $d]
+    list [dict get $r ok] [string match "*no release-signing key*" [dict get $r error]] $::fetched [readBytes $d/app] [listing $d]
+} -cleanup {resetEnv} -result [list 0 1 {} [fakeProgram 1.0.0] app]
+
+test upd-apply-refuses-malformed-key {a broken key file is also a refusal} -setup {
+    resetEnv; set d [target]
+    set ::tg::update::pubKeyText "tgpub1:notakey"
+} -body {
+    set r [applyTo $d]
+    list [dict get $r ok] [string match "*malformed*" [dict get $r error]] $::fetched
+} -cleanup {resetEnv} -result {0 1 {}}
+
+proc expectKept {d result substr} {
+    list [dict get $result ok] [expr {[dict get $result ok] || [string match "*$substr*" [dict get $result error]] ? 1 : [dict get $result error]}] [expr {[readBytes $d/app] eq [fakeProgram 1.0.0]}] [listing $d]
+}
+
+test upd-apply-wrong-signature {a manifest signed by another key is refused, the old program stays} -setup {resetEnv; set d [target]} -body {
+    publish 1.1.0 [fakeProgram 1.1.0] -key $::K2
+    expectKept $d [applyTo $d] "signature is NOT valid"
+} -result {0 1 1 app}
+
+test upd-apply-unsigned {an unsigned manifest is refused} -setup {resetEnv; set d [target]} -body {
+    publish 1.1.0 [fakeProgram 1.1.0] -sign 0
+    expectKept $d [applyTo $d] "not signed"
+} -result {0 1 1 app}
+
+test upd-apply-tampered-manifest {changing the manifest after signing is detected} -setup {resetEnv; set d [target]} -body {
+    publish 1.1.0 [fakeProgram 1.1.0] -tamper 1
+    expectKept $d [applyTo $d] "signature is NOT valid"
+} -result {0 1 1 app}
+
+test upd-apply-tampered-binary {a binary that differs from the signed checksum (same size) is discarded} -setup {resetEnv; set d [target]} -body {
+    set new [fakeProgram 1.1.0]
+    publish 1.1.0 $new
+    dict set ::served https://updates.example.test/dl/tclguard-test-1.1.0 [string replace $new 3 3 X]
+    expectKept $d [applyTo $d] "does not match the signed checksum"
+} -result {0 1 1 app}
+
+test upd-apply-wrong-size {a short or long download is refused} -setup {resetEnv; set d [target]} -body {
+    set new [fakeProgram 1.1.0]
+    publish 1.1.0 $new
+    dict set ::served https://updates.example.test/dl/tclguard-test-1.1.0 [string range $new 0 end-5]
+    set a [expectKept $d [applyTo $d] "incomplete"]
+    dict set ::served https://updates.example.test/dl/tclguard-test-1.1.0 $new\nEXTRA
+    set b [expectKept $d [applyTo $d] "larger than the allowed"]
+    list $a $b
+} -result {{0 1 1 app} {0 1 1 app}}
+
+test upd-apply-signed-hash-mismatch {a signed manifest whose checksum is wrong for the file it lists is refused} -setup {resetEnv; set d [target]} -body {
+    publish 1.1.0 [fakeProgram 1.1.0] -sha [string repeat 0 64]
+    expectKept $d [applyTo $d] "signed checksum"
+} -result {0 1 1 app}
+
+test upd-apply-download-fails {a server error during the download leaves nothing behind} -setup {resetEnv; set d [target]} -body {
+    publish 1.1.0 [fakeProgram 1.1.0]
+    dict set ::served https://updates.example.test/dl/tclguard-test-1.1.0 "ERR connection closed before the download finished"
+    expectKept $d [applyTo $d] "connection closed"
+} -result {0 1 1 app}
+
+test upd-apply-downgrade {an older or equal version is never installed (replay of an old signed manifest)} -setup {resetEnv; set d [target]} -body {
+    set out {}
+    publish 0.9.0 [fakeProgram 0.9.0]
+    lappend out [expectKept $d [applyTo $d] "refusing to downgrade"]
+    publish 1.0.0 [fakeProgram 1.0.0]
+    set r [applyTo $d]
+    lappend out [dict get $r ok] [dict get $r status] [listing $d]
+    publish 1.0.0-rc.1 [fakeProgram 1.0.0-rc.1]
+    lappend out [expectKept $d [applyTo $d] "refusing to downgrade"]
+} -result {{0 1 1 app} 1 uptodate app {0 1 1 app}}
+
+test upd-apply-version-mismatch {the new program must report the version in the manifest} -setup {resetEnv; set d [target]} -body {
+    publish 1.1.0 [fakeProgram 1.2.0]
+    expectKept $d [applyTo $d] "reports version '1.2.0' instead of 1.1.0"
+} -result {0 1 1 app}
+
+test upd-apply-new-program-broken {a program that exits with an error, prints nothing or is not a program is refused} -setup {resetEnv; set d [target]} -body {
+    set out {}
+    publish 1.1.0 [fakeProgram 1.1.0 fail]
+    lappend out [expectKept $d [applyTo $d] "does not run on this machine"]
+    publish 1.1.0 [fakeProgram 1.1.0 silent]
+    lappend out [expectKept $d [applyTo $d] "reports version '' instead of 1.1.0"]
+    publish 1.1.0 "this is not a program at all\n"
+    lappend out [expectKept $d [applyTo $d] "does not run on this machine"]
+} -result {{0 1 1 app} {0 1 1 app} {0 1 1 app}}
+
+test upd-apply-new-program-hangs {a program that never answers is killed after the timeout} -setup {
+    resetEnv; set d [target]
+    set ::tg::update::runTimeout 700
+} -body {
+    publish 1.1.0 [fakeProgram 1.1.0 hang]
+    set t [clock milliseconds]
+    set r [expectKept $d [applyTo $d] "did not answer within"]
+    list $r [expr {[clock milliseconds] - $t < 10000}]
+} -cleanup {resetEnv} -result {{0 1 1 app} 1}
+
+test upd-apply-new-program-floods {a program that prints endlessly is stopped} -setup {resetEnv; set d [target]} -body {
+    publish 1.1.0 [fakeProgram 1.1.0 flood]
+    expectKept $d [applyTo $d] "printed too much output"
+} -result {0 1 1 app}
+
+test upd-apply-no-file-for-platform {a release without a download for this machine is refused} -setup {resetEnv; set d [target]} -body {
+    publish 1.1.0 [fakeProgram 1.1.0] -platform linux-riscv64
+    expectKept $d [applyTo $d] "no download for"
+} -result {0 1 1 app}
+
+test upd-apply-min-version {a program older than the manifest's min is told to download by hand} -setup {resetEnv; set d [target]} -body {
+    publish 2.0.0 [fakeProgram 2.0.0] -min 1.5.0
+    expectKept $d [applyTo $d] "older than the oldest version that can update itself (1.5.0)"
+} -result {0 1 1 app}
+
+test upd-apply-https-only {a manifest naming an http:// download is invalid even though it is signed} -setup {resetEnv; set d [target]} -body {
+    publish 1.1.0 [fakeProgram 1.1.0] -url http://updates.example.test/dl/x
+    set r [expectKept $d [applyTo $d] "HTTPS"]
+    list $r [dict exists $::served http://updates.example.test/dl/x] $::fetched
+} -result [list {0 1 1 app} 1 {https://updates.example.test/manifest.json https://updates.example.test/manifest.json.sig}]
+
+test upd-apply-feed-http-refused {an http:// feed is refused outright} -setup {resetEnv; set d [target]} -body {
+    set r [applyTo $d {url http://updates.example.test/manifest.json}]
+    list [dict get $r ok] [string match "*non-HTTPS*" [dict get $r error]] $::fetched
+} -result {0 1 {}}
+
+test upd-apply-name-cannot-escape {a hostile file name in the manifest cannot write outside the target folder} -setup {resetEnv; set d [target]} -body {
+    publish 1.1.0 [fakeProgram 1.1.0] -name ../../escape
+    set r [expectKept $d [applyTo $d] "unsafe file name"]
+    list $r [file exists $d/../escape-1.1.0] [file exists $d/../../escape-1.1.0]
+} -result {{0 1 1 app} 0 0}
+
+test upd-apply-odd-target-path {spaces, brackets and braces in the program path work and leave no stray files} -setup {resetEnv} -body {
+    set d [freshDir "od dd \[x\] {y}"]
+    writeBytes "$d/my app \[1\]" [fakeProgram 1.0.0]
+    file attributes "$d/my app \[1\]" -permissions 0755
+    publish 1.1.0 [fakeProgram 1.1.0]
+    set r [::tg::update::apply [dict create url $::feed target "$d/my app \[1\]"]]
+    list [dict get $r ok] [listing $d] [expr {[readBytes "$d/my app \[1\].previous"] eq [fakeProgram 1.0.0]}]
+} -result [list 1 [lsort [list "my app \[1\]" "my app \[1\].previous"]] 1]
+
+test upd-apply-follows-symlink {a symbolic link to the program is not replaced; the real file is} -setup {resetEnv; set d [target]} -body {
+    file mkdir $d/bin
+    file link -symbolic $d/bin/app-link $d/app
+    publish 1.1.0 [fakeProgram 1.1.0]
+    set r [::tg::update::apply [dict create url $::feed target $d/bin/app-link]]
+    list [dict get $r ok] [file type $d/bin/app-link] [expr {[readBytes $d/app] eq [fakeProgram 1.1.0]}] [expr {[file exists $d/app.previous]}] [llength [glob -nocomplain $d/bin/*]]
+} -result {1 link 1 1 1}
+
+test upd-apply-from-source-refused {running from source (no starpack, no target) cannot self-update} -setup {
+    resetEnv
+    set had [info exists ::starkit::topdir]
+    if {$had} { set saved $::starkit::topdir; unset ::starkit::topdir }
+} -body {
+    publish 1.1.0 [fakeProgram 1.1.0]
+    set r [::tg::update::apply [dict create url $::feed]]
+    list [dict get $r ok] [string match "*running from source*" [dict get $r error]] [llength $::fetched]
+} -cleanup {if {$had} { set ::starkit::topdir $saved }} -result {0 1 0}
+
+test upd-windows-swap {the Windows path renames the running program to .old, keeps .previous and restores on failure} -setup {
+    resetEnv; set d [target]
+    set savedPlat $::tcl_platform(platform)
+    set ::tcl_platform(platform) windows
+} -body {
+    set new [fakeProgram 1.1.0]
+    writeBytes $d/app.new77 $new
+    ::tg::update::swapIn $d/app.new77 $d/app
+    set out [list [listing $d] [expr {[readBytes $d/app.old] eq [fakeProgram 1.0.0]}] [expr {[readBytes $d/app.previous] eq [fakeProgram 1.0.0]}] [expr {[readBytes $d/app] eq $new}]]
+    # a leftover .old from an earlier update does not block the next one
+    writeBytes $d/app.new78 [fakeProgram 1.2.0]
+    ::tg::update::swapIn $d/app.new78 $d/app
+    lappend out [expr {[readBytes $d/app.old] eq $new}] [expr {[readBytes $d/app] eq [fakeProgram 1.2.0]}]
+    # failure while moving the new file in: the running program is put back
+    writeBytes $d/app.newtest "x"
+    rename ::file ::file_orig
+    proc ::file {args} {
+        if {[lindex $args 0] eq "rename" && [lindex $args end-1] eq "$::d/app.newtest"} { error "access denied" }
+        tailcall ::file_orig {*}$args
+    }
+    set e [catch {::tg::update::swapIn $d/app.newtest $d/app} msg]
+    rename ::file {}
+    rename ::file_orig ::file
+    lappend out $e [string match "*could not put the new program in place*" $msg] [expr {[readBytes $d/app] eq [fakeProgram 1.2.0]}]
+} -cleanup {
+    set ::tcl_platform(platform) $savedPlat
+    if {[llength [info commands ::file_orig]]} { rename ::file {}; rename ::file_orig ::file }
+} -result [list {app app.old app.previous} 1 1 1 1 1 1 1 1]
+
+test upd-apply-new-over-previous {a second update replaces .previous with the version it replaced} -setup {resetEnv; set d [target]} -body {
+    publish 1.1.0 [fakeProgram 1.1.0]
+    applyTo $d
+    publish 1.2.0 [fakeProgram 1.2.0]
+    # the running version is still 1.0.0 in this process, which is fine: 1.2.0 > 1.0.0
+    set r [applyTo $d]
+    list [dict get $r ok] [expr {[readBytes $d/app.previous] eq [fakeProgram 1.1.0]}] [expr {[readBytes $d/app] eq [fakeProgram 1.2.0]}] [listing $d]
+} -result {1 1 1 {app app.previous}}
+
+test upd-apply-temp-cleaned-on-exception {even an unexpected error inside the download removes the temporary file} -setup {resetEnv; set d [target]} -body {
+    publish 1.1.0 [fakeProgram 1.1.0]
+    set orig [info body ::tg::update::sha256File]
+    proc ::tg::update::sha256File {args} { error "disk on fire" }
+    set r [applyTo $d]
+    proc ::tg::update::sha256File {path {progress ""}} $orig
+    list [dict get $r ok] [dict get $r error] [listing $d]
+} -result {0 {disk on fire} app}
+
+# =============================================================================== rollback ====
+
+test upd-rollback {rollback restores the previous program and keeps the replaced one for rolling forward} -setup {resetEnv; set d [target]} -body {
+    set new [fakeProgram 1.1.0]
+    publish 1.1.0 $new
+    applyTo $d
+    set r [::tg::update::rollback [dict create target $d/app]]
+    set a [list [dict get $r ok] [expr {[readBytes $d/app] eq [fakeProgram 1.0.0]}] [expr {[readBytes $d/app.previous] eq $new}] [listing $d] [file attributes $d/app -permissions]]
+    set r2 [::tg::update::rollback [dict create target $d/app]]
+    list $a [dict get $r2 ok] [expr {[readBytes $d/app] eq $new}]
+} -result {{1 1 1 {app app.previous} 00750} 1 1}
+
+test upd-rollback-nothing {without a previous version rollback says so and changes nothing} -setup {resetEnv; set d [target]} -body {
+    set r [::tg::update::rollback [dict create target $d/app]]
+    list [dict get $r ok] [string match "*no previous version*" [dict get $r error]] [listing $d]
+} -result {0 1 app}
+
+test upd-rollback-broken-previous {a previous program that no longer runs is not swapped in} -setup {resetEnv; set d [target]} -body {
+    writeBytes $d/app.previous "not a program"
+    file attributes $d/app.previous -permissions 0755
+    set r [::tg::update::rollback [dict create target $d/app]]
+    list [dict get $r ok] [string match "*does not run on this machine*nothing was changed*" [dict get $r error]] [expr {[readBytes $d/app] eq [fakeProgram 1.0.0]}] [listing $d]
+} -result {0 1 1 {app app.previous}}
+
+# ============================================================================ status, auto ====
+
+test upd-status-text {status shows version, key state, feed, last check and the previous copy} -setup {resetEnv; set d [target]} -body {
+    set a [::tg::update::statusText]
+    set ::tg::update::pubKeyText "tgpub1:UNSET"
+    set b [::tg::update::statusText]
+    list [string match "*release key:   embedded, fingerprint*" $a] [string match "*last check:    never*" $a] [string match "*previous copy: none*" $a] \
+         [string match "*NOT SET in this build*refuses*" $b] [string match "*update feed:   https://github.com/atyr647/tclguard/releases/latest/download/manifest.json*" $a]
+} -cleanup {resetEnv} -result {1 1 1 1 1}
+
+test upd-autocheck {disabled by default, rate limited to once a day, retried after an hour on failure, never installs} -setup {resetEnv; set d [target]} -body {
+    publish 1.1.0 [fakeProgram 1.1.0]
+    set out {}
+    set r [::tg::update::autoCheck]
+    lappend out [dict get $r skipped] [dict get $r reason] [llength $::fetched]
+    dict set ::tg::cfg::current general updateCheck 1
+    dict set ::tg::cfg::current general updateUrl $::feed
+    set r [::tg::update::autoCheck]
+    lappend out [dict get $r skipped] [dict get $r status] [dict get $r latest] [llength $::fetched]
+    incr ::tg::clockSkew 3600000
+    set r [::tg::update::autoCheck]
+    lappend out [dict get $r skipped] [dict get $r reason] [dict get $r status] [dict get $r latest] [llength $::fetched]
+    incr ::tg::clockSkew [expr {23 * 3600 * 1000 + 100000}]
+    set r [::tg::update::autoCheck]
+    lappend out [dict get $r skipped] [dict get $r status] [llength $::fetched]
+    # a failed attempt is retried after an hour, not a day
+    set ::served {}
+    incr ::tg::clockSkew [expr {25 * 3600 * 1000}]
+    set r [::tg::update::autoCheck]
+    lappend out [dict get $r status] [llength $::fetched]
+    incr ::tg::clockSkew [expr {1800 * 1000}]
+    lappend out [dict get [::tg::update::autoCheck] reason]
+    incr ::tg::clockSkew [expr {1900 * 1000}]
+    lappend out [dict get [::tg::update::autoCheck] skipped]
+    lappend out [readBytes $d/app] [listing $d]
+    set out
+} -cleanup {resetEnv} -result [list 1 disabled 0  0 available 1.1.0 2  1 rate-limited available 1.1.0 2  0 available 4  error 5  rate-limited  0 [fakeProgram 1.0.0] app]
+
+test upd-autocheck-starts-no-timers {autoCheck neither schedules anything nor touches the tick list} -setup {resetEnv} -body {
+    set before [list [after info] $::tg::tickCmds]
+    dict set ::tg::cfg::current general updateCheck 1
+    dict set ::tg::cfg::current general updateUrl $::feed
+    publish 1.1.0 [fakeProgram 1.1.0]
+    ::tg::update::autoCheck
+    expr {$before eq [list [after info] $::tg::tickCmds]}
+} -cleanup {resetEnv} -result 1
+
+test upd-state-corrupt {a damaged state file is ignored, not fatal} -setup {resetEnv} -body {
+    writeBytes $::tg::update::stateFileOverride "\{ not json"
+    set s [::tg::update::status]
+    list [dict get $s lastCheck] [dict get $s pending]
+} -cleanup {resetEnv} -result {0 0}
+
+# ================================================================================ cleanup ====
+
+test upd-cleanup {leftovers of an update next to the program are removed, nothing else} -setup {resetEnv} -body {
+    set d [freshDir cln]
+    foreach f [glob -nocomplain -directory $d *] { file delete -force $f }
+    set exe "$d/tclguard \[v1\].exe"
+    set ::tg::update::targetOverride $exe
+    foreach n {"" .old .old4242 .previous .new999 .new1000 .oldie .older "x.old" } { writeBytes "$exe$n" x }
+    writeBytes "$d/tclguard v1.exe.old" x
+    writeBytes "$d/other.old" x
+    file mtime "$exe.new999" [expr {[clock seconds] - 7200}]
+    set n [::tg::update::cleanup]
+    list $n [listing $d]
+} -cleanup {resetEnv} -result [list 3 [lsort [list "other.old" "tclguard v1.exe.old" "tclguard \[v1\].exe" "tclguard \[v1\].exe.previous" "tclguard \[v1\].exe.new1000" "tclguard \[v1\].exe.oldie" "tclguard \[v1\].exe.older" "tclguard \[v1\].exex.old"]]]
+
+foreach f [glob -nocomplain -directory [temporaryDirectory] state-*.json] { file delete -force $f }
+cleanupTests

@@ -89,10 +89,11 @@ proc ::tg::autostart::status {} {
     }
 }
 
-# Returns "" on success, or an error message.
-proc ::tg::autostart::enable {} {
+# Returns "" on success, or an error message. The installer passes the command line of the
+# INSTALLED copy; by default the autostart entry starts the program that is running now.
+proc ::tg::autostart::enable {{cmd ""}} {
     variable taskName
-    set cmd [selfCommand --gui]
+    if {$cmd eq ""} { set cmd [selfCommand --gui] }
     switch -- [platform] {
         windows {
             set tr [join [lmap a $cmd {quoteWin $a}] " "]
