@@ -369,7 +369,7 @@ proc ::tg::update::prepareTls {} {
         if {![file readable $ca]} { error "the configured CA file '$ca' cannot be read" }
         ::tg::https::setCaFile $ca
     }
-    catch { file mkdir [::tg::cfg::stateDir] }      ;# the bundled CA list is unpacked there on Windows
+    catch { file mkdir [stateDir] }      ;# the bundled CA list is unpacked there on Windows
     ::tg::https::init
 }
 
@@ -418,7 +418,11 @@ proc ::tg::update::fetch {url args} {
     while 1 {
         array unset xfer
         array set xfer [list max $o(-maxbytes) count 0 discarded 0 body "" fh "" progress $o(-progress)]
-        if {$o(-file) ne ""} { set xfer(fh) [open $o(-file) wb] }
+        if {$o(-file) ne ""} {
+            # never write through a pre-planted symbolic link: remove whatever is there, then create EXCLUSIVELY
+            catch { file delete -force -- $o(-file) }
+            set xfer(fh) [open $o(-file) {WRONLY CREAT EXCL BINARY} 0700]
+        }
         set tok ""
         try {
             if {[catch {
@@ -452,10 +456,17 @@ proc ::tg::update::fetch {url args} {
 
 # ================================================================================ state ====
 
+# The state folder, even when no configuration file has been loaded (then ::tg::cfg::stateDir would
+# answer "./state", i.e. wherever the current directory happens to be).
+proc ::tg::update::stateDir {} {
+    if {$::tg::cfg::path eq "" && [::tg::cfg::general stateDir] eq ""} { return [file join [::tg::cfg::homeDir] state] }
+    ::tg::cfg::stateDir
+}
+
 proc ::tg::update::stateFile {} {
     variable stateFileOverride
     if {$stateFileOverride ne ""} { return $stateFileOverride }
-    file join [::tg::cfg::stateDir] update-state.json
+    file join [stateDir] update-state.json
 }
 
 proc ::tg::update::loadState {} {
@@ -679,13 +690,16 @@ proc ::tg::update::copyPermissions {from to} {
 
 proc ::tg::update::canWriteBeside {target} {
     set probe $target.probe[pid]
-    if {[catch {close [open $probe w]}]} { return 0 }
+    catch { file delete -force -- $probe }
+    if {[catch {close [open $probe {WRONLY CREAT EXCL} 0600]}]} { return 0 }
     catch { file delete -force -- $probe }
     return 1
 }
 
+# The caller's progress command runs at global level (so that, e.g., "apply {...}" means Tcl's apply and
+# not ::tg::update::apply). Errors in it never abort an update.
 proc ::tg::update::progress {cmd phase done total} {
-    if {$cmd ne ""} { catch { {*}$cmd $phase $done $total } }
+    if {$cmd ne ""} { catch { uplevel #0 [list {*}$cmd $phase $done $total] } }
 }
 
 # apply ?{url U target T progress CMD}? -> dict: ok error status old new backup restart

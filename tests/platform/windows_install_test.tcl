@@ -1,4 +1,4 @@
-# usage: windows_install_test.tcl ?phase ...?   (no phases = all). Phases: user system defer
+# usage: windows_install_test.tcl ?phase ...?   (no phases = all). Phases: user system defer update
 #
 # Real-Windows test of the installer (install.tcl): Start Menu / desktop shortcuts, the Add/Remove
 # Programs registry entry, the Scheduled Task, replacing a RUNNING copy (rename to .old), the Windows
@@ -13,7 +13,7 @@
 # modal dialog that nobody can dismiss on a CI runner.
 puts "windows_install_test: starting"; flush stdout
 source [file join [file dirname [info script]] common.tcl]
-set ::phases [expr {[info exists ::argv] && [llength $::argv] ? $::argv : {user system defer}}]
+set ::phases [expr {[info exists ::argv] && [llength $::argv] ? $::argv : {user system defer update}}]
 proc want {p} { expr {$p in $::phases} }
 puts "Windows installer tests: Tcl [info patchlevel] on $tcl_platform(os) $tcl_platform(osVersion), [info nameofexecutable]"
 
@@ -203,5 +203,42 @@ if {[want defer]} { rawCall "self-uninstall" {
     check "registry entry is gone" [expr {$rc != 0}] $o
     check "keepData left the data folder" [file exists [file join $data tclguard.conf]]
     catch {file delete -force [file dirname $data]}
+} }
+
+# ---- self-update mechanics on real Windows (the parts that cannot be faked) -------------------------
+if {[want update]} { rawCall "update mechanics" {
+    phase "update: a program answers 'version' over a pipe, and a RUNNING exe can be swapped"
+    set guiExe [file join $::root releases tclguard-windows-x86_64.exe]
+    if {[file exists $guiExe]} {
+        # the GUI-subsystem build has no console: its output must still reach a pipe, or no update could ever be verified
+        lassign [::tg::update::runVersion $guiExe] ok text
+        check "the GUI (no-console) program prints its version into a pipe" [expr {$ok && [string match "TclGuard *" $text]}] $text
+    } else {
+        puts "SKIP GUI-build version check: $guiExe not present"
+    }
+    lassign [::tg::update::runVersion $exe] ok text
+    check "the console program prints its version into a pipe" [expr {$ok && [string match "TclGuard *" $text]}] $text
+    set target [file join $tmp tg-upd-target.exe]
+    catch {file delete -force $target $target.previous $target.old}
+    file copy -force $exe $target
+    set sleeper [file join $tmp tg-sleeper2.tcl]
+    set fh [open $sleeper w]; puts $fh {after 60000 {set ::done 1}; vwait ::done}; close $fh
+    set pidRun [exec $target eval $sleeper &]
+    after 3000
+    set newer [file join $tmp tg-upd-new.exe]
+    file copy -force $exe $newer
+    set fh [open $newer ab]; puts -nonewline $fh "\0update"; close $fh
+    set orig [file size $target]
+    set e [catch {::tg::update::swapIn $newer $target} msg]
+    check "swapIn replaces a RUNNING exe (rename to .old)" [expr {!$e}] $msg
+    check "the new file is in place" [expr {[file size $target] == [file size $exe] + 7}]
+    check ".old (the running one) and .previous both exist" [expr {[file exists $target.old] && [file exists $target.previous] && [file size $target.previous] == $orig}]
+    catch {exec taskkill /F /PID $pidRun}
+    check "the old running copy ended" [waitProcessGone $pidRun 30]
+    set ::tg::update::targetOverride $target
+    set n [::tg::update::cleanup]
+    set ::tg::update::targetOverride ""
+    check "cleanup removes .old once nothing runs it" [expr {$n >= 1 && ![file exists $target.old]}] $n
+    catch {file delete -force $target $target.previous $newer}
 } }
 finish

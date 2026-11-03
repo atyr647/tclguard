@@ -265,6 +265,25 @@ test inst-identical-foreign-ok {a byte-identical file already at the target is a
     list [::tg::install::run {scope user}] [expr {[lsearch -exact [pathsOf $d/home/.local/share/tclguard/install.json] $d/home/.local/bin/tclguard] >= 0}]
 } -result {{} 1}
 
+test inst-plan-identical {the plan says when the installed program is already this one} -setup {
+    set d [sandbox]
+    ::tg::install::run {scope user}
+} -body {
+    set a [lindex [::tg::install::plan {scope user}] 0]
+    writeBytes $d/src/tclguard-new "different\n"
+    set b [lindex [::tg::install::plan {scope user}] 0]
+    list [string match "*already this exact program; nothing to copy" $a] [string match "Replace the installed program*" $b]
+} -result {1 1}
+
+test inst-replace-note {replacing a program says that a running copy keeps the old version} -setup {
+    set d [sandbox]
+    ::tg::install::run {scope user}
+    writeBytes $d/src/tclguard-new "different\n"
+} -body {
+    ::tg::install::run {scope user}
+    string match "*already running keeps using the old version*" [lindex [::tg::install::notes] 0]
+} -result 1
+
 test inst-install-from-installed {running the installed copy again installs nothing new and does not truncate itself} -setup {
     set d [sandbox]
     ::tg::install::run {scope user}

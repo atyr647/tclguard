@@ -485,7 +485,7 @@ test upd-apply-good {end to end: verified, swapped in, old kept as .previous, ex
     set new [fakeProgram 1.1.0]
     publish 1.1.0 $new
     set steps {}
-    set r [applyTo $d [dict create progress [list ::apply {{phase done total} {lappend ::steps $phase}}]]]
+    set r [applyTo $d [dict create progress [list apply {{phase done total} {lappend ::steps $phase}}]]]
     list [dict get $r ok] [dict get $r status] [dict get $r old] [dict get $r new] [expr {[readBytes $d/app] eq $new}] \
          [expr {[readBytes $d/app.previous] eq [fakeProgram 1.0.0]}] [file attributes $d/app -permissions] [listing $d] \
          [lsort -unique $::steps] [dict get [::tg::update::status] previousVersion]
@@ -767,6 +767,21 @@ test upd-autocheck-starts-no-timers {autoCheck neither schedules anything nor to
     ::tg::update::autoCheck
     expr {$before eq [list [after info] $::tg::tickCmds]}
 } -cleanup {resetEnv} -result 1
+
+test upd-state-dir-without-config {with no configuration loaded the state goes to the data folder, not the current directory} -setup {
+    resetEnv
+    set ::tg::update::stateFileOverride ""
+    set savedPath $::tg::cfg::path
+    set ::tg::cfg::path ""
+    set ::env(TCLGUARD_HOME) [freshDir tghome]
+} -body {
+    set f [::tg::update::stateFile]
+    list [expr {$f eq [file join $::env(TCLGUARD_HOME) state update-state.json]}]
+} -cleanup {
+    set ::tg::cfg::path $savedPath
+    unset ::env(TCLGUARD_HOME)
+    resetEnv
+} -result 1
 
 test upd-state-corrupt {a damaged state file is ignored, not fatal} -setup {resetEnv} -body {
     writeBytes $::tg::update::stateFileOverride "\{ not json"

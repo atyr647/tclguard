@@ -295,7 +295,7 @@ proc cmdInstall {argv} {
         if {[takeOpt argv $flag] ne ""} { dict set o $key $val }
     }
     set dir [lindex [takeOpt argv --dir 1] 0]
-    if {$dir ne ""} { dict set o dir $dir }
+    if {$dir ne ""} { dict set o dir [file normalize $dir] }      ;# expands ~ and relative names
     set dry [takeOpt argv --dry-run]
     set ui [expr {[takeOpt argv --interactive] ne ""}]
     if {[llength $argv]} { die "unknown argument '[lindex $argv 0]' (see 'tclguard help')" }

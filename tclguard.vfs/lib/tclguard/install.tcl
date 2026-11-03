@@ -634,6 +634,8 @@ proc ::tg::install::describeInstall {o L} {
     set same [sameFile [dict get $L exe] $bin]
     if {$same} {
         lappend steps "TclGuard is already running from [nat $bin]; nothing to copy"
+    } elseif {[file isfile $bin] && ![catch {sameBytes [dict get $L exe] $bin} same] && $same} {
+        lappend steps "[nat $bin] is already this exact program; nothing to copy"
     } elseif {[file exists $bin]} {
         lappend steps "Replace the installed program [nat $bin] with this one (the old copy is kept until it is no longer running[expr {$plat eq {windows} ? {: it is renamed to tclguard.exe.old} : {}}])"
     } else {
@@ -743,6 +745,7 @@ proc ::tg::install::copyProgram {o L mVar} {
         addItem m [dict create type binary path $dst]
         return
     }
+    if {[file exists $dst]} { note "A TclGuard that is already running keeps using the old version until it is restarted." }
     set tmp "$dst.new[pid]"
     try {
         file copy -force -- $src $tmp

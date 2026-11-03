@@ -100,7 +100,7 @@ jobs:
         run: |
           $exe = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
           $failed = @()
-          foreach ($phase in 'user','system','defer') {
+          foreach ($phase in 'user','system','defer','update') {
             Write-Host "##[group]installer phase: $phase"
             pwsh -NoProfile -File tools\ci-bounded.ps1 -Exe $exe -Seconds 240 eval tests\platform\windows_install_test.tcl $phase
             if ($LASTEXITCODE -ne 0) { $failed += "$phase (exit $LASTEXITCODE)" }
