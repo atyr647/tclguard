@@ -133,7 +133,19 @@ proc ::tg::selftest::run {{argv {}}} {
     set eb [socket -server ::tg::selftest::echoAccept -myaddr 127.0.0.1 $ebp]
     set haveUdp [expr {![catch {package require udp}]}]
     if {$haveUdp} {
-        set ub [udp_open $ubp]
+        # the listener's own UDP port gets the same treatment (it is opened later by the guard itself)
+        for {set try 0} {$try < 25} {incr try} {
+            if {![catch {udp_open $up} probe]} { catch {close $probe}; break }
+            set up [freePort]
+        }
+        # A port that is free for TCP can still be refused for UDP (Windows reserves excluded port ranges for Hyper-V/WinNAT, and a
+        # UDP socket may already hold it): look for one that really opens (seen once on a real runner: "access permissions").
+        set ub ""
+        for {set try 0} {$try < 25 && $ub eq ""} {incr try} {
+            if {![catch {udp_open $ubp} ub]} break
+            set ub ""; set ubp [freePort]
+        }
+        if {$ub eq ""} { error "could not open any UDP port for the backend" }
         fconfigure $ub -blocking 0 -translation binary -buffering none
         fileevent $ub readable ::tg::selftest::udpBackendRead
     }
