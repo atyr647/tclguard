@@ -13,9 +13,15 @@ case "$(basename "$HOSTKIT")" in tclkit*) EVALWORD="" ;; *) EVALWORD="eval" ;; e
 cp "$HOSTKIT" /tmp/tg-rewrap-host.$$ && chmod +x /tmp/tg-rewrap-host.$$
 trap 'rm -f /tmp/tg-rewrap-host.$$' EXIT
 cd dist
-rm -f tclguard-linux tclguard.exe tclguard-console.exe
+rm -f tclguard-linux tclguard.exe tclguard-console.exe tclguard-macos-*
 xvfb-run -a /tmp/tg-rewrap-host.$$ $EVALWORD ../build.tcl --runtime ../tools/runtimes/rt-linux-x86_64 --format mk4 --out tclguard-linux </dev/null 2>&1 | tail -1
 xvfb-run -a /tmp/tg-rewrap-host.$$ $EVALWORD ../build.tcl --runtime ../tools/runtimes/rt-windows-x86_64.exe --format mk4 --out tclguard.exe </dev/null 2>&1 | tail -1
+# macOS (runtimes built on real Mac runners by .github/workflows/runtime-macos.yml and kept in tools/runtimes/)
+for a in arm64 x86_64; do
+  if [ -f ../tools/runtimes/rt-macos-$a ]; then
+    xvfb-run -a /tmp/tg-rewrap-host.$$ $EVALWORD ../build.tcl --runtime ../tools/runtimes/rt-macos-$a --format mk4 --out tclguard-macos-$a </dev/null 2>&1 | tail -1
+  fi
+done
 python3 - <<'PY'
 import struct
 b = bytearray(open("tclguard.exe", "rb").read())
@@ -29,5 +35,6 @@ cd ..
 cp dist/tclguard-linux releases/tclguard-linux-x86_64
 cp dist/tclguard.exe releases/tclguard-windows-x86_64.exe
 cp dist/tclguard-console.exe releases/tclguard-windows-x86_64-console.exe
+for a in arm64 x86_64; do [ -f dist/tclguard-macos-$a ] && cp dist/tclguard-macos-$a releases/tclguard-macos-$a && chmod +x releases/tclguard-macos-$a; done
 chmod +x releases/tclguard-linux-x86_64
-(cd releases && sha256sum tclguard-linux-x86_64 tclguard-windows-x86_64.exe tclguard-windows-x86_64-console.exe > SHA256SUMS && cat SHA256SUMS)
+(cd releases && sha256sum tclguard-linux-x86_64 tclguard-windows-x86_64.exe tclguard-windows-x86_64-console.exe $(ls tclguard-macos-* 2>/dev/null) > SHA256SUMS && cat SHA256SUMS)

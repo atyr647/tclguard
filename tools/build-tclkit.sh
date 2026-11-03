@@ -35,10 +35,19 @@ cd kc
 # GitHub release publish the same SHA-256 for the OpenSSL tarball.
 OPENSSL_VERSION=3.5.9
 OPENSSL_SHA256=603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a
+# tcltls 1.7.22 segfaults in tls::import on macOS (found on a real Apple-silicon runner), so macOS uses 2.0.1; the other
+# platforms keep 1.7.22, which is what the Linux and Windows test suites were run against.
+if [ "$target" = macos ]; then
+  TLS_VERSION=2.0.1; TLS_URL='https://core.tcl-lang.org/tcltls/tarball/tls-${version}/tcltls-${version}.tar.gz'
+  TLS_SHA256=b19da006d63d8f49c2ad2180c8a07afbad6f734503ef273355990c477c623db7
+else
+  TLS_VERSION=1.7.22; TLS_URL='https://core.tcl-lang.org/tcltls/uv/tcltls-${version}.tar.gz'
+  TLS_SHA256=e84e2b7a275ec82c4aaa9d1b1f9786dbe4358c815e917539ffe7f667ff4bc3b4
+fi
 sedi \
-  -e 's/^version="1.7.19"/version="1.7.22"/' \
-  -e 's#^url=.*#url="https://core.tcl-lang.org/tcltls/uv/tcltls-${version}.tar.gz"#' \
-  -e "s/^sha256=.*/sha256='e84e2b7a275ec82c4aaa9d1b1f9786dbe4358c815e917539ffe7f667ff4bc3b4'/" \
+  -e "s/^version=\"1.7.19\"/version=\"$TLS_VERSION\"/" \
+  -e "s#^url=.*#url=\"$TLS_URL\"#" \
+  -e "s/^sha256=.*/sha256='$TLS_SHA256'/" \
   -e '/patch-tcltls/d' \
   -e '/libtcl86.a/d' \
   tls/build.sh
