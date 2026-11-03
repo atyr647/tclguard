@@ -386,7 +386,10 @@ proc ::tg::update::resolveUrl {base loc} {
 # up in the download); the body of the final response is counted against the limit AS IT ARRIVES.
 proc ::tg::update::onData {sock token} {
     variable xfer
-    set data [read $sock]
+    # A SIZED read: a plain [read $sock] keeps reading while data keeps arriving, so a server that sends faster than we can
+    # return from the call (measured: one call took 53 MB, in another run 370 MB) defeats the size limit checked below and
+    # fills memory. 64 KB per call bounds the overshoot to one block.
+    set data [read $sock 65536]
     set n [string length $data]
     set code [::http::ncode $token]
     if {$code != 200} {

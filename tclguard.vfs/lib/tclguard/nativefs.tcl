@@ -54,7 +54,7 @@ proc ::tg::nfs::same {a b} {
         # SHA-256 with .NET directly, not Get-FileHash: that cmdlet lives in an auto-loaded script module, and a PowerShell started
         # from a parent that set PSModulePath for another PowerShell edition (CI runners, some shells) does not find it.
         set script [join [list \
-            "function H(\$p) { \$s = [System.IO.File]::Open(\$p, 'Open', 'Read', 'ReadWrite,Delete'); try { return [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash(\$s)) } finally { \$s.Close() } }" \
+            "function H(\$p) { \$s = \[System.IO.File]::Open(\$p, 'Open', 'Read', 'ReadWrite,Delete'); try { return \[System.BitConverter]::ToString(\[System.Security.Cryptography.SHA256]::Create().ComputeHash(\$s)) } finally { \$s.Close() } }" \
             "\$ha = \$null; \$hb = \$null; \$err = ''" \
             "for (\$i = 0; \$i -lt 40; \$i++) {" \
             "  try { \$ha = H [q $a]; \$hb = H [q $b]; break }" \
