@@ -87,6 +87,8 @@ case $target in
     # stub), so ask for C99; Tk must be the native Aqua build (without this it looks for X11 headers, or builds against XQuartz
     # when that happens to be installed).
     export CFLAGS="${CFLAGS:-} -std=gnu99 -Dfdopen=fdopen"
+    # tcltls 1.7 left a "*.a.linkadd" file naming the OpenSSL archives for the final link; 2.0 does not, so say so here
+    export KC_KITSH_LIBS="$inst/lib/libssl.a $inst/lib/libcrypto.a"
     # (kitcreator passes whatever follows the version to every package's configure)
     ./kitcreator 8.6.14 --enable-64bit --enable-aqua ;;
   win64)
