@@ -27,7 +27,9 @@ TclGuard sits in front of your real server. Visitors talk to TclGuard first; it 
 3. **Protection tab → "+ Add protection"**, pick your game or "Website", confirm the two ports. It takes effect immediately.
 4. **Forward the public port** on your router to this computer and test from *outside* your network (mobile data).
 5. **Firewall tab → install rules**, run as administrator/root. This is what makes it hold up against real floods.
-6. Run `tclguard selftest` any time to watch it fend off a simulated attack on your own machine.
+6. Click **Help -> Run self-test** to watch it fend off a simulated attack on your own machine.
+
+**You never need a terminal on Windows or macOS.** Everything is in the window: *Restart as administrator* (for the kernel firewall), *Start TclGuard when I sign in*, *Open data folder*, the self-test, and every setting. The command line (`tclguard ctl ...`) exists for servers without a screen.
 
 Headless / server:
 

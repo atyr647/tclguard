@@ -15,7 +15,7 @@ chmod +x tclguard-linux-x86_64
 sudo ./tclguard-linux-x86_64            # GUI (or --headless on a server)
 ```
 
-Windows: double-click `tclguard-windows-x86_64.exe` (right-click, *Run as administrator* for the Windows Firewall integration).
+Windows: double-click `tclguard-windows-x86_64.exe`. For the Windows Firewall integration click **Restart as administrator** inside the app (Windows asks once). **Start TclGuard when I sign in** (Settings) creates a Scheduled Task, so it survives reboots without any command line.
 
 ## What has and has not been verified
 
