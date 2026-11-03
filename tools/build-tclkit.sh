@@ -73,8 +73,8 @@ case $target in
     # stub), so ask for C99; Tk must be the native Aqua build (without this it looks for X11 headers, or builds against XQuartz
     # when that happens to be installed).
     export CFLAGS="${CFLAGS:-} -std=gnu99 -Dfdopen=fdopen"
-    export CONFIGUREEXTRA="--enable-aqua"
-    ./kitcreator 8.6.14 --enable-64bit ;;
+    # (kitcreator passes whatever follows the version to every package's configure)
+    ./kitcreator 8.6.14 --enable-64bit --enable-aqua ;;
   win64)
     : "${TCLKIT:?set TCLKIT to a native tclkit (the linux one built above)}"
     export TCLKIT PKG_CONFIG_LIBDIR=/usr/x86_64-w64-mingw32/lib/pkgconfig
