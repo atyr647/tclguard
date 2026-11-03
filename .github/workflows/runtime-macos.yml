@@ -34,7 +34,7 @@ jobs:
           tools/build-tclkit.sh macos 2>&1 | tee "$RUNNER_TEMP/build.log" | tail -n 60
           test -x "$WORK/kc/tclkit-8.6.14"
       - name: Why a package failed (KitCreator keeps one build.log per package)
-        if: ${{ failure() }}
+        if: ${{ !cancelled() }}
         run: |
           for p in zlib tk kitsh tcl mk4tcl udp tls; do
             f="$RUNNER_TEMP/kcwork/kc/$p/build.log"
@@ -49,7 +49,7 @@ jobs:
           file "$kit" || true
           otool -L "$kit" || true
           codesign -dv "$kit" 2>&1 || true
-          "$kit" <<< 'puts [info patchlevel]; puts [package require Tk]; puts [package require udp]; puts [package require tls]; puts [tls::version]; puts [package require vfs::mk4]' || true
+          "$kit" <<< 'puts [info patchlevel]; puts "Tk [package require Tk] windowing: [tk windowingsystem]"; puts [package require udp]; puts "tls [package require tls] [tls::version]"; puts [package require vfs::mk4]; exit 0'
       - name: Wrap the TclGuard starpack on it
         run: |
           kit="$RUNNER_TEMP/kcwork/kc/tclkit-8.6.14"

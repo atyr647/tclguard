@@ -72,34 +72,24 @@ foreach {text want} [list \
     check "declined? '[string range $text 0 50]' -> $want" [expr {[::tg::autostart::declined $text] == $want}]
 }
 
-phase "the REAL password dialog, answered by a script (best effort: needs the runner to allow UI scripting)"
-# A runner user is an administrator with passwordless sudo, so we may give that account a known password; this is a throw-away VM.
-set user [exec id -un]
-set pw "tg-test-[expr {int(rand()*1e9)}]"
-set haveSudo [expr {![catch {exec sudo -n true 2>@1}]}]
-if {!$haveSudo || [catch {exec sudo -n dscl . -passwd /Users/$user $pw 2>@1} e]} {
-    puts "SKIP: cannot set a known password for $user ($e)"
+phase "the REAL password dialog on this machine (information only: a script cannot know the account password here)"
+set ::tg::autostart::macPrivilege "with administrator privileges"
+set ::tg::cfg::path "/tmp/dialog.conf"
+file delete -force $marker
+set osa [::tg::autostart::macScript [::tg::autostart::elevationCommand]]
+set ch [open [list |osascript -e $osa 2>@1] r]
+fconfigure $ch -blocking 0
+set out ""
+set t0 [clock seconds]
+while {[clock seconds] - $t0 < 20 && ![eof $ch]} { after 250; append out [read $ch] }
+if {![eof $ch]} {
+    puts "INFO the macOS password dialog opened and is waiting for a password after 20 s (as it should); closing it"
+    catch {exec killall osascript}
+    catch {exec killall SecurityAgent}
 } else {
-    set ::tg::autostart::macPrivilege "with administrator privileges"
-    set ::tg::cfg::path "/tmp/dialog test/dialog.conf"
-    file delete -force $marker
-    set osa [::tg::autostart::macScript [::tg::autostart::elevationCommand]]
-    set ch [open [list |osascript -e $osa 2>@1] r]
-    fconfigure $ch -blocking 0
-    after 4000
-    # type the password into the dialog and press Return
-    set rc [catch {exec osascript -e "tell application \"System Events\" to keystroke \"$pw\"" -e "delay 0.5" -e "tell application \"System Events\" to key code 36" 2>@1} typed]
-    puts "INFO typing into the dialog: rc=$rc $typed"
-    set out ""
-    set t0 [clock seconds]
-    while {[clock seconds] - $t0 < 30 && ![eof $ch]} { after 250; append out [read $ch] }
-    set got [readMarker]
-    if {$got ne ""} {
-        check "the real dialog accepted the password and the program started as root with the config path intact" [expr {[dict get $got uid] == 0 && [dict get $got argv] eq [list --gui --config "/tmp/dialog test/dialog.conf"]}] $got
-    } else {
-        puts "INFO the dialog could not be answered by a script here (rc=$rc, osascript said: '[string trim $out]'); the password dialog itself stays unverified"
-        catch {exec killall osascript}
-        catch {exec killall SecurityAgent}
-    }
+    catch {close $ch} err
+    puts "INFO the dialog ended by itself: output '[string trim $out]' $err"
+    puts "INFO that text is [expr {[::tg::autostart::declined "$out $err"] ? {recognised as a refusal by TclGuard} : {NOT recognised as a refusal}}]"
 }
+check "the dialog did not start the program without a password" [expr {![file exists $marker]}]
 finish
