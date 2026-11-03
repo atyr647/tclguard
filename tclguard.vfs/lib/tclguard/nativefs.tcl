@@ -32,14 +32,35 @@ proc ::tg::nfs::copy {src dst} {
 
 # Rename, replacing dst.
 proc ::tg::nfs::move {src dst} {
-    if {[win]} { ps "Move-Item -LiteralPath [q $src] -Destination [q $dst] -Force"; return }
+    if {[win]} {
+        ps [join [list \
+            "for (\$i = 0; \$i -lt 8; \$i++) {" \
+            "  try { Move-Item -LiteralPath [q $src] -Destination [q $dst] -Force -ErrorAction Stop; break }" \
+            "  catch { if (\$i -eq 7) { throw }; Start-Sleep -Milliseconds 500 }" \
+            "}"] "\n"]
+        return
+    }
     if {[catch {exec mv -f -- $src $dst 2>@1} out]} { error [string trim $out] }
 }
 
-# Byte-for-byte equality of two files.
+# Byte-for-byte equality of two files. On Windows a file that was written a moment ago is often held open for a short
+# while by the virus scanner (a 12 MB .exe always is), so reading it can fail with "being used by another process": retry.
+# The reason of the last failure is kept in lastError for the messages of the callers.
+namespace eval ::tg::nfs { variable lastError "" }
 proc ::tg::nfs::same {a b} {
+    variable lastError
+    set lastError ""
     if {[win]} {
-        return [expr {![catch {ps "if ((Get-FileHash -LiteralPath [q $a]).Hash -ne (Get-FileHash -LiteralPath [q $b]).Hash) { exit 1 }"}]}]
+        set script [join [list \
+            "\$ha = \$null; \$hb = \$null; \$err = ''" \
+            "for (\$i = 0; \$i -lt 40; \$i++) {" \
+            "  try { \$ha = (Get-FileHash -LiteralPath [q $a] -ErrorAction Stop).Hash; \$hb = (Get-FileHash -LiteralPath [q $b] -ErrorAction Stop).Hash; break }" \
+            "  catch { \$err = \$_.Exception.Message; \$ha = \$null; Start-Sleep -Milliseconds 500 }" \
+            "}" \
+            "if (\$ha -eq \$null) { Write-Output \"cannot read: \$err\"; exit 2 }" \
+            "if (\$ha -ne \$hb) { Write-Output 'different'; exit 1 }"] "\n"]
+        if {[catch {ps $script} out]} { set lastError $out; return 0 }
+        return 1
     }
     expr {![catch {exec cmp -s -- $a $b 2>@1}]}
 }

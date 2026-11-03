@@ -275,10 +275,16 @@ if OPENSSL and os.name != "nt":
         if pid == 0:
             os.execvp(OPENSSL, [OPENSSL, "s_client", "-connect", f"127.0.0.1:{port}", "-tls1_3", "-crlf"])
         buf = b""
-        pump(1.5)
+        def pump_until(marker, t):
+            """Read until marker shows up (or t seconds pass): fixed sleeps are too short on a slow CI machine."""
+            end = time.time() + t
+            while time.time() < end and marker not in buf:
+                pump(0.1)
+            return marker in buf
+        pump_until(b"Verify return code", 15)     # the handshake has finished and s_client printed the session
         for i in range(3):
-            os.write(fd, b"k\n"); pump(0.3)
-        os.write(fd, b"GET /after-keyupdate HTTP/1.1\nHost: x\nConnection: close\n\n"); pump(2.5)
+            os.write(fd, b"k\n"); pump(0.5)
+        os.write(fd, b"GET /after-keyupdate HTTP/1.1\nHost: x\nConnection: close\n\n"); pump_until(b"ok:GET /after-keyupdate", 15)
         try: os.kill(pid, 9); os.waitpid(pid, 0)
         except Exception: pass
         check("TLS 1.3 key updates do not trip the renegotiation guard", b"ok:GET /after-keyupdate" in buf, buf[-200:])

@@ -764,7 +764,7 @@ proc ::tg::install::copyProgram {o L mVar} {
     try {
         rawCopy $src $tmp
         catch { file attributes $tmp -permissions 0755 }
-        if {![rawSame $src $tmp]} { error "the copy to $tmp does not match the original (disk full?)" }
+        if {![rawSame $src $tmp]} { error "the copy to $tmp does not match the original (disk full?)[expr {$::tg::nfs::lastError ne {} ? " - $::tg::nfs::lastError" : {}}]" }
         putInPlace $tmp $dst
     } finally {
         catch { file delete -force -- $tmp }
