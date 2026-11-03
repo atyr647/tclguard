@@ -48,6 +48,8 @@ tcp only: `firstByteTimeout`.
 
 All per-address limits are multiplied by the current threat-level factor (never below 1).
 
+**HTTPS (tcp / http listeners):** `tls` (`yes`/`no`), `tlsCert` + `tlsKey` (your own PEM files; leave both empty to use a managed certificate in `<state>/certs/<listener>.pem`), `tlsNames` (DNS names / addresses for the managed self-signed certificate and for ACME), `tlsMinVersion` (`1.2` or `1.3`), `tlsCiphers` (OpenSSL cipher string for TLS 1.2; default is ECDHE + AES-GCM/ChaCha20), `tlsHandshakeTimeout` (seconds, default 10), `tlsMaxHandshaking` (cap on unfinished handshakes across the guard, default 256). **Automatic certificates:** `acme` (`yes`/`no`), `acmeEmail`, `acmeDirectory` (default Let's Encrypt production; the staging URL is `https://acme-staging-v02.api.letsencrypt.org/directory`), `acmeCaFile` (trust file for a private ACME server, normally empty). **Redirect (http listeners):** `redirectHttps` + `redirectPort` send plain-HTTP visitors to the https:// address. See [TLS.md](TLS.md).
+
 ## watchers
 
 ```
