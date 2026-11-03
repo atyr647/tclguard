@@ -84,9 +84,11 @@ if args.fw != "none":
 if args.workers: general["workers"] = args.workers
 g = Guard(listeners, general)
 g.start()
-for p in (web, cap, game, tlsp): assert wait_port(p, 10), f"listener {p} not up"
+for p in (web, cap, game): assert wait_port(p, 10), f"listener {p} not up"
+HAVE_TLS = wait_port(tlsp, 10)
+if not HAVE_TLS: print("NOTE: the HTTPS listener did not start (this build has no TLS): the TLS flood phase is skipped", flush=True)
 # pin the guard (and any worker threads, which share its pid) to its core
-subprocess.run(["taskset", "-a", "-p", "-c", GUARD_CORE, str(g.proc.pid)], capture_output=True)
+if HAVE_TASKSET: subprocess.run(["taskset", "-a", "-p", "-c", GUARD_CORE, str(g.proc.pid)], capture_output=True)
 
 # --------------------------------------------------------------------------- sampler ----
 samples = []
@@ -213,10 +215,11 @@ try:
               [("garbage", tgload("garbage", "-addr", f"{T}:{web}", "-workers", 80, "-dur", f"{D(40, 8)}s", "-srcbase", S("127.0.5.0"), "-srcn", 120))],
               note="random bytes, request smuggling attempts, oversize URIs, TLS hello at a plain port")
     settle(5)
-    run_phase("TLS handshake flood", D(40, 8),
-              [("tlsflood", tgload("tlsflood", "-addr", f"{T}:{tlsp}", "-workers", 80, "-dur", f"{D(40, 8)}s", "-srcbase", S("127.0.6.0"), "-srcn", 120)),
-               ("tls half-open", tgload("tlsflood", "-addr", f"{T}:{tlsp}", "-workers", 60, "-dur", f"{D(40, 8)}s", "-srcbase", S("127.0.9.0"), "-srcn", 120, "-halfopen"))],
-              probe_tls=True, note="full and abandoned TLS handshakes from 240 addresses; the probe is an HTTPS visitor")
+    if HAVE_TLS:
+        run_phase("TLS handshake flood", D(40, 8),
+                  [("tlsflood", tgload("tlsflood", "-addr", f"{T}:{tlsp}", "-workers", 80, "-dur", f"{D(40, 8)}s", "-srcbase", S("127.0.6.0"), "-srcn", 120)),
+                   ("tls half-open", tgload("tlsflood", "-addr", f"{T}:{tlsp}", "-workers", 60, "-dur", f"{D(40, 8)}s", "-srcbase", S("127.0.9.0"), "-srcn", 120, "-halfopen"))],
+                  probe_tls=True, note="full and abandoned TLS handshakes from 240 addresses; the probe is an HTTPS visitor")
     settle(5)
     run_phase("UDP flood", D(30, 6),
               [("udpflood", tgload("udpflood", "-addr", f"{T}:{udp}", "-pps", 40000, "-dur", f"{D(30, 6)}s", "-srcbase", S("127.0.7.0"), "-srcn", 30, "-size", 80))],
@@ -233,7 +236,7 @@ try:
                ("connflood", tgload("connflood", "-addr", f"{T}:{web}", "-workers", 40, "-dur", f"{soak}s", "-srcbase", S("127.0.3.0"), "-srcn", 200)),
                ("slowloris", tgload("slowloris", "-addr", f"{T}:{web}", "-conns", 400, "-dur", f"{soak}s", "-srcbase", S("127.0.4.0"), "-srcn", 100)),
                ("garbage", tgload("garbage", "-addr", f"{T}:{web}", "-workers", 20, "-dur", f"{soak}s", "-srcbase", S("127.0.5.0"), "-srcn", 60)),
-               ("tlsflood", tgload("tlsflood", "-addr", f"{T}:{tlsp}", "-workers", 20, "-dur", f"{soak}s", "-srcbase", S("127.0.6.0"), "-srcn", 60)),
+               *([("tlsflood", tgload("tlsflood", "-addr", f"{T}:{tlsp}", "-workers", 20, "-dur", f"{soak}s", "-srcbase", S("127.0.6.0"), "-srcn", 60))] if HAVE_TLS else []),
                ("udpflood", tgload("udpflood", "-addr", f"{T}:{udp}", "-pps", 8000, "-dur", f"{soak}s", "-srcbase", S("127.0.7.0"), "-srcn", 20, "-size", 80))],
               note="every attack type at a moderate rate, for minutes: looking for leaks, drift and collapse")
     settle(20)

@@ -12,20 +12,23 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(__file__))
 from harness import check, summary, ROOT
 
+import platform
 win = os.name == "nt"
-STAR = os.environ.get("TG_STARPACK") or os.path.join(ROOT, "releases", "tclguard-windows-x86_64-console.exe" if win else "tclguard-linux-x86_64")
-if sys.platform not in ("win32", "linux") or not os.path.exists(STAR):
-    print("SKIP starpack update test: needs Linux or Windows and the shipped starpack"); sys.exit(0)
+mac = sys.platform == "darwin"
+ARCH = "arm64" if platform.machine() in ("arm64", "aarch64") else "x86_64"
+STAR = os.environ.get("TG_STARPACK") or os.path.join(ROOT, "releases", "tclguard-windows-x86_64-console.exe" if win else ("tclguard-macos-" + ARCH if mac else "tclguard-linux-x86_64"))
+if sys.platform not in ("win32", "linux", "darwin") or not os.path.exists(STAR):
+    print("SKIP starpack update test: needs Linux, Windows or macOS and the shipped starpack"); sys.exit(0)
 OPENSSL = shutil.which("openssl")
 if not OPENSSL:
     print("SKIP starpack update test: no openssl binary for the throwaway certificate"); sys.exit(0)
-PLAT = "windows-x86_64" if win else "linux-x86_64"
-RUNTIME = os.path.join(ROOT, "tools", "runtimes", "rt-windows-x86_64.exe" if win else "rt-linux-x86_64")   # the raw Tcl runtime (no payload)
+PLAT = "windows-x86_64" if win else ("macos-" + ARCH if mac else "linux-x86_64")
+RUNTIME = os.path.join(ROOT, "tools", "runtimes", "rt-windows-x86_64.exe" if win else ("rt-macos-" + ARCH if mac else "rt-linux-x86_64"))   # the raw Tcl runtime (no payload)
 EXT = ".exe" if win else ""
 W = tempfile.mkdtemp(prefix="tgupdsp")
 HOME = os.path.join(W, "home"); os.makedirs(HOME)
 ENV = {"TCLGUARD_HOME": HOME, "HOME": HOME}
-if not win and not os.environ.get("DISPLAY"):
+if not win and not mac and not os.environ.get("DISPLAY"):
     XV = ["xvfb-run", "-a"] if shutil.which("xvfb-run") else []
 else:
     XV = []

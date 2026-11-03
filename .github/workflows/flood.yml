@@ -37,15 +37,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: { go-version: stable }
-      - name: Tcl, OpenSSL and the load generators
+      - name: The load generators
         run: |
-          brew install tcl-tk@8
           (cd tests/load/tgload && go build -o ../tgload-bin .)
           pip3 install --break-system-packages psutil 2>/dev/null || pip3 install psutil
-      - name: Flood test (from source, Homebrew Tcl)
+      - name: Flood test against the macOS starpack
         run: |
           ulimit -n 10240 || true
-          export TG_CMD="/opt/homebrew/opt/tcl-tk@8/bin/tclsh8.6 $PWD/tclguard.vfs/main.tcl"
+          chmod +x releases/tclguard-macos-arm64; xattr -cr releases/tclguard-macos-arm64 || true
+          export TG_CMD="$PWD/releases/tclguard-macos-arm64"
           python3 -u tests/load/run_flood.py --soak 90 --label macos
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}

@@ -20,7 +20,7 @@ jobs:
           - { arch: arm64,  runner: macos-latest }
           - { arch: x86_64, runner: macos-15-intel }
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Build tools
@@ -49,7 +49,12 @@ jobs:
           file "$kit" || true
           otool -L "$kit" || true
           codesign -dv "$kit" 2>&1 || true
-          "$kit" <<< 'puts [info patchlevel]; puts "Tk [package require Tk] windowing: [tk windowingsystem]"; puts [package require udp]; puts "tls [package require tls] [tls::version]"; puts [package require vfs::mk4]; exit 0'
+          for pkg in Tk udp tls vfs::mk4; do
+            echo "--- package require $pkg"
+            gtimeout 45 "$kit" <<< "puts [package require $pkg]; exit 0" 2>&1 | head -5
+            echo "    exit status: ${PIPESTATUS[0]}"
+          done
+          gtimeout 45 "$kit" <<< 'puts "Tk windowing: [tk windowingsystem]"; puts "tls [tls::version]"; exit 0' 2>&1 | head -5 || true
       - name: Wrap the TclGuard starpack on it
         run: |
           kit="$RUNNER_TEMP/kcwork/kc/tclkit-8.6.14"

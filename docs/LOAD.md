@@ -55,9 +55,41 @@ traffic before it reaches Tcl at all.
 3. **A slow-drip attack could take every connection slot.** 1,500 slow connections from 300 addresses made thousands of a returning visitor's attempts fail. The last
    quarter of the global connection cap is now reserved for known visitors (`tests/integration/test_reserve.py`).
 
+## Over a real network path, with the kernel firewall (Linux)
+
+The loopback run above has three weaknesses: no real network path, source addresses that are loopback aliases, and no kernel
+firewall. `tests/load/run_flood_netns.sh` removes them: the guard sits in one network namespace and every visitor and attacker in
+another, joined by a veth pair, so every packet crosses the real kernel TCP/IP stack between distinct real `10.77.x.y` addresses. It
+also adds a **spoofed SYN flood** (60,000 packets/s, every one from a new random address, sent through a raw socket) and runs the
+guard three ways: `none` (Tcl does everything), `bans` (bans are mirrored into nftables, so a banned address is dropped before it
+reaches Tcl) and `harden` (bans plus the kernel's per-address SYN, connection and UDP limits). The same run on my machine and on a GitHub
+runner (both 4 vCPU, 90 s soak):
+
+| Phase (guard CPU, one core) | Tcl only | kernel bans | bans + hardening |
+|---|---|---|---|
+| connection flood (1.3 M connections) | 94-95% | **12-14%** | 13% |
+| garbage / smuggling attempts | 89-94% | **11-13%** | 10-12% |
+| TLS handshake flood | 89-93% | 15% (runner) / 53% (mine) | 14% / 53% |
+| UDP flood (40,000 packets/s) | 88-94% | **7-8%** | 7-8% |
+| mixed soak | 97% | **32-34%** | 31-38% |
+| **spoofed SYN flood** | **5-7%** | 5-7% | 5-6% |
+| request flood just under the per-address limits | 95% | 95% | 95% |
+
+Visitors saw 227 to 261 requests/s (of 256 offered) and no errors in every one of these phases, with p50 between 0.8 and 2.3 ms. What the
+table says:
+* **The kernel firewall is what makes floods cheap.** With bans in nftables the guard's CPU during a connection, garbage or UDP flood
+  falls from about 90% of a core to about 10%: the first few hundred packets of an address reach Tcl, the rest never do.
+* **A spoofed SYN flood never reaches Tcl at all.** The kernel answered with SYN cookies (1.8 to 2.3 million per run) and the guard stayed at 5-7% CPU. It
+  is not a per-address problem, so no per-address defence helps; the kernel's own cookies do the work. `ListenDrops` stayed in the tens to
+  low hundreds. (A flood large enough to fill the network line is a different matter, see the README.)
+* **Hardening costs a little tail latency.** With `harden`, the SYN-flood phase had p99 188 ms (p50 unchanged) and the mixed soak p99 81 ms on the runner,
+  because the kernel's per-address SYN limit also trims some of a visitor's own new connections. Turn `harden` on when you are being attacked, not by default.
+* **The one phase that did not improve is the request flood** (200 addresses, each just under its limit): 4,500 requests/s of work that looks
+  legitimate to every per-address defence. Visitors got 132-159 requests/s at p50 35-56 ms, without errors. Nothing short of more CPU
+  or a CDN helps there.
+
 ## What this test does not show
-* Everything runs on **one machine over loopback**: no network latency, no NIC or interrupt cost, no packet loss, and source addresses are `127.x.y.z`
-  aliases. The kernel firewall was not used (no root), so bans were enforced by the guard at accept time, which is the slower path.
-* A **SYN flood or volumetric UDP flood against the machine itself** is below the guard (see the README on what it cannot stop).
+* The namespace run crosses a real kernel network path but still **one machine, one virtual link**: no physical NIC, no interrupt moderation, no packet loss, and
+  bandwidth is limited only by the CPU. A **volumetric flood that fills the network line** is below the guard (see the README on what it cannot stop).
 * The numbers are for this virtual machine; a different CPU will differ by a factor of two or more. The shape (who is affected, what recovers) is what to take from it.
 * TLS handshakes were measured with the shipped OpenSSL (3.5); the per-handshake cost on a slow ARM board will be higher.

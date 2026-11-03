@@ -319,6 +319,30 @@ jobs:
           export PEBBLE_TESTDIR="$(ls -d $(go env GOMODCACHE)/github.com/letsencrypt/pebble/v2@*/test | head -1)"
           export TG_CMD="$TCLSH $PWD/tclguard.vfs/main.tcl"
           cd tests/integration && python3 -u test_acme.py
+      - name: Released starpack (arm64, built on a Mac runner) - version and self-test
+        if: ${{ !cancelled() }}
+        run: |
+          chmod +x releases/tclguard-macos-arm64
+          xattr -cr releases/tclguard-macos-arm64 || true     # (what a person does with a download: remove the quarantine flag)
+          releases/tclguard-macos-arm64 version
+          releases/tclguard-macos-arm64 selftest
+      - name: Released starpack - integration, TLS (its own tcltls 2.0.1 + OpenSSL), updates, descriptors
+        if: ${{ !cancelled() }}
+        run: |
+          export TG_CMD="$PWD/releases/tclguard-macos-arm64"
+          cd tests/integration
+          python3 -u test_http.py && python3 -u test_features.py && python3 -u test_tls.py && python3 -u test_ipv6.py
+          python3 -u test_fdlimit.py && python3 -u test_reserve.py
+          export PATH="$(brew --prefix openssl@3)/bin:$PATH"
+          python3 -u test_update_starpack.py
+      - name: Released starpack - GUI smoke test under Aqua
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: releases/tclguard-macos-arm64 eval tests/gui/smoke.tcl
+      - name: Released starpack - the GUI as root (this is what "Restart as administrator" produces on macOS)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: sudo -E releases/tclguard-macos-arm64 eval tests/gui/smoke.tcl
       - name: GUI smoke test (Aqua)
         continue-on-error: true
         timeout-minutes: 5
