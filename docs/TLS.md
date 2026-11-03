@@ -26,7 +26,7 @@ Edit → HTTPS: turn on HTTPS, leave the automatic option off, and give the path
 |---|---|---|
 | Linux single file, Windows single file | built into the program: tcltls 1.7.22 with a static OpenSSL 3.5.9 | the TLS suite (34 to 37 checks) on a real Linux machine and a real Windows runner |
 | Anything run from source (any OS) | the `tls` package of your Tcl (tcltls) and the system OpenSSL | Linux (tcltls 1.7.22 and 2.0.1) |
-| macOS | you install tcltls **2.0.1 or newer** (the Homebrew Tcl has none) | see `releases/README.md` for what the macOS runner showed |
+| macOS | you install tcltls **2.0.1 or newer** (the Homebrew Tcl has none) | the TLS suite (39 checks) and the ACME suite (20) on a real macOS runner |
 
 **tcltls 1.7.x crashes (segmentation fault) the first time it wraps a connection on macOS** (Tcl 8.6.18 on Apple silicon, OpenSSL 3.5, found
 with a real macOS runner; a debugger shows a jump to a garbage address inside `tls::import`). TclGuard therefore refuses to use it there: a listener with

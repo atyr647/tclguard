@@ -20,24 +20,32 @@ Windows: double-click `tclguard-windows-x86_64.exe`. For the Windows Firewall in
 ## What has and has not been verified
 
 Checked on **real GitHub-hosted runners** (Windows Server 2025 as administrator, macOS on Apple Silicon, Ubuntu) by
-`.github/workflows/ci.yml`, and under Wine / Xvfb during development.
+`.github/workflows/ci.yml`, on every push; all three are green for this release. See also `docs/LOAD.md` (flood test) and the README's Verification table.
 
 | | Linux | Windows | macOS |
 |---|---|---|---|
 | Starpack in this folder | yes | yes (both .exe) | none shipped (see below) |
 | `selftest` (15 live-attack checks incl. UDP relay) | yes | **yes, real Windows** | yes (from source) |
-| Unit tests (config, bans, firewall command logic, monitor parser, autostart) | yes | **yes, run by the Tcl inside the starpack** | yes |
+| Unit tests (342 checks: config, bans, firewall command logic, crypto, installer, updater ...) | yes | **yes, run by the Tcl inside the starpack** (Unix-simulating installer/updater tests are skipped there) | yes |
 | Integration: real sockets, 48 HTTP + 57 feature checks incl. UDP, WebSocket, PROXY protocol | yes | **yes, against the Windows starpack** | yes |
-| Kernel firewall rule install / ban / unban / remove | nftables, real kernel (22 checks) | **Windows Firewall via `netsh`, real rule lifecycle** | pf: 18 platform checks |
+| TLS termination (own tcltls + static OpenSSL 3.5.9 in the starpacks) | 39 checks, source and starpack | **34 checks, real Windows, starpack** | 39 checks (tcltls 2.0.1 built from source) |
+| Let's Encrypt (ACME) against Pebble | 20 checks, source and starpack | **20 checks, real Windows** | 20 checks |
+| IPv6 end to end | 11 checks | **11 checks** | 11 checks |
+| Single file updates itself from a signed manifest, keeps `.previous`, rolls back | 12 checks, the shipped starpack | **15 checks, real Windows (a helper swaps the file after the exit)** | 53 checks (source, signature/transport) |
+| Installer / uninstaller | real systemd unit, self-removal | **user and system scope, shortcuts, Add/Remove Programs, Scheduled Task, deferred self-removal** | plist lint + launchctl with a stand-in program |
+| Kernel firewall rule install / ban / unban / remove | nftables, real kernel (22 checks) | **Windows Firewall via `netsh`: 2,500 bans over 5 rules** | pf: 18 platform checks |
 | Live connection scan (`netstat`) | `/proc` | **parsed from a real Windows table** | parsed from BSD netstat |
 | Start at sign-in | XDG autostart entry | **Task Scheduler task created, read back, removed** | LaunchAgent |
-| GUI | Xvfb | **27 scripted flows on a real desktop** | 27 under Aqua |
+| GUI | Xvfb (36 flows) | **36 scripted flows on a real desktop** | 36 under Aqua |
+| HTTP parser fuzzer | 0 findings in the CI smoke run, 103 regression checks | (the parser is the same Tcl) | (same) |
+| Sustained flood test (5 min mixed soak etc.) | yes, [docs/LOAD.md](../docs/LOAD.md) | not run | not run |
 
-macOS has no starpack here: a macOS Tk kit has to be built on a Mac. It runs from source with Homebrew's Tcl/Tk 8.6 and
-tcludp (see `docs/DEPLOYMENT.md`), which is what the macOS runner tests.
+macOS has no starpack here: a macOS Tk kit has to be built on a Mac. It runs from source with Homebrew's Tcl/Tk 8.6, tcludp, and for HTTPS
+**tcltls 2.0.1 or newer** (1.7.x crashes there and TclGuard refuses to use it, see `docs/TLS.md`); that is what the macOS runner tests.
 
-Not verified anywhere: behaviour under a real multi-gigabit flood, IPv6 end to end, the "Restart as administrator" UAC /
-osascript prompts (they need a person to click), and real-world uptime.
+Not verified anywhere: behaviour under a real multi-gigabit flood or over a real network (the flood test is loopback on one machine), the
+"Restart as administrator" UAC / osascript prompts (they need a person to click), signed updates against a real release (the signing key has
+not been generated yet, see `docs/UPDATES.md`), and real-world uptime.
 
 The plain Windows executable uses the GUI subsystem (no console window), so command-line output does not appear in
 Command Prompt. Use `tclguard-windows-x86_64-console.exe` for command-line work (it is the same file with one PE header
