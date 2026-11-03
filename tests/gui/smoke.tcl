@@ -151,6 +151,59 @@ after 300 {
 ::tg::gui::selfTest
 check "self-test dialog reports all checks passed" [string match "All * checks passed*" $::stResult] $::stResult
 
+# 9e. HTTPS: wizard preset with a domain, certificate chip, the HTTPS tab in the edit dialog
+if {[::tg::tls::available]} {
+    set ::tg::acme::busy 1                               ;# never contact a certificate authority from a test
+    # the preset uses ports 80/443; use high ones so the test needs no privileges and cannot collide
+    dict set ::tg::cfg::presets(website-https) listeners {
+        {type http port 38080 backendPort 38081 redirectHttps 1 redirectPort 38443}
+        {type http port 38443 backendPort 38081 tls 1 acme 1}
+    }
+    ::tg::gui::showPage protection; pump
+    after 100 {
+        ::tg::gui::wizPick .wiz.f website-https
+        set ::tg::gui::v(wizDomain) "Example.Test"
+        set ::tg::gui::v(wizBackend) 38081
+        ::tg::gui::wizAdd .wiz
+    }
+    ::tg::gui::addWizard
+    pump 300
+    set ls [::tg::cfg::listeners]
+    set tlsName ""; set redirName ""
+    dict for {nm sp} $ls {
+        if {[::tg::bool [dict get $sp tls]]} { set tlsName $nm }
+        if {[::tg::bool [dict get $sp redirectHttps]]} { set redirName $nm }
+    }
+    check "HTTPS wizard creates the port 80 redirect and the TLS listener" [expr {$tlsName ne "" && $redirName ne ""}] [dict keys $ls]
+    check "domain is lowercased and stored for the certificate" [expr {[dict get $ls $tlsName tlsNames] eq "example.test"}] [dict get $ls $tlsName tlsNames]
+    check "TLS listener is running with a certificate" [expr {$tlsName in [::tg::tcp::listening] && [dict exists [::tg::tls::certStatus $tlsName] notAfter]}]
+    set cs [::tg::gui::certSummary $tlsName]
+    check "certificate status explains the temporary certificate" [expr {[lindex $cs 0] eq "warn" && [string match "*Temporary*" [lindex $cs 1]]}] $cs
+    ::tg::gui::showPage protection; pump 150
+    check "protection row shows an HTTPS chip" [winfo exists [lindex $::tg::gui::v(lrow,$tlsName) 2].tls]
+    check "plain listener has no certificate chip" [expr {[::tg::gui::certSummary $redirName] eq ""}]
+
+    # edit dialog: the HTTPS tab exists and its fields save (words are split into a list)
+    after 150 {
+        set ::seen [expr {[info exists ::tg::gui::v(e,acme)] && [info exists ::tg::gui::v(e,tlsNames)] && [winfo exists [lindex [winfo children .edit] 0].https]}]
+        set ::tg::gui::v(e,tlsNames) "example.test, www.example.test  api.example.test"
+        set ::tg::gui::v(e,tlsMinVersion) 1.3
+        ::tg::gui::saveListener .edit $::tlsName http [concat {*}[::tg::gui::listenerFields http]]
+    }
+    ::tg::gui::editListener $tlsName
+    pump 250
+    check "edit dialog has an HTTPS tab with the TLS fields" $::seen
+    set sp [dict get [::tg::cfg::listeners] $tlsName]
+    check "domain names are saved as a list" [expr {[dict get $sp tlsNames] eq {example.test www.example.test api.example.test}}] [dict get $sp tlsNames]
+    check "minimum TLS version saved" [expr {[dict get $sp tlsMinVersion] eq "1.3"}]
+    # clean up the listeners again
+    set c $::tg::cfg::current; foreach nm [dict keys [::tg::cfg::listeners]] { dict unset c listeners $nm }
+    ::tg::gui::applyConfig $c; pump 100
+    set ::tg::acme::busy 0
+} else {
+    puts "SKIP HTTPS GUI checks: this Tcl has no tls package"
+}
+
 # 10. no Tcl errors anywhere along the way
 set errs {}
 foreach e [::tg::log::tail 5000 debug] { if {[string match "*background error*" [lindex $e 2]]} { lappend errs [lindex $e 2] } }

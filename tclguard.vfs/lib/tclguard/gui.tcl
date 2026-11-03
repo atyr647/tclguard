@@ -524,9 +524,11 @@ proc ::tg::gui::rebuildListeners {s} {
         pack $tile.i -padx 12 -pady 12
         fr $in.r.info $in.r -bg surface
         set bindAddr [expr {[dict exists $cl $n] ? [dict get $cl $n bind] : "0.0.0.0"}]
-        tx $in.r.info.n $in.r.info $n -font h3 -bg surface
+        fr $in.r.info.nr $in.r.info -bg surface
+        tx $in.r.info.nr.n $in.r.info.nr $n -font h3 -bg surface
         tx $in.r.info.a $in.r.info "[::tg::joinHostPort $bindAddr [dict get $L port]]  →  [dict get $L backend]" -font monosm -fg muted -bg surface
-        pack $in.r.info.n -anchor w
+        pack $in.r.info.nr -anchor w
+        pack $in.r.info.nr.n -side left
         pack $in.r.info.a -anchor w -pady {3 0}
         fr $in.r.chips $in.r -bg surface
         ::tg::kit::chip $in.r.chips.t $in.r.chips [string toupper [dict get $L type]] -tone accent
@@ -543,7 +545,7 @@ proc ::tg::gui::rebuildListeners {s} {
         pack $in.r.sw -side right -padx {0 16}
         pack $in.r.cn -side right -padx {0 20}
         pack $in.r.chips -side right -padx {0 20}
-        set v(lrow,$n) [list $in.r.chips $in.r.cn]
+        set v(lrow,$n) [list $in.r.chips $in.r.cn $in.r.info.nr]
     }
     foreach L $list { updateListenerRow $L }
 }
@@ -552,7 +554,7 @@ proc ::tg::gui::updateListenerRow {L} {
     variable v
     set n [dict get $L name]
     if {![info exists v(lrow,$n)]} return
-    lassign $v(lrow,$n) chips cn
+    lassign $v(lrow,$n) chips cn namerow
     if {![winfo exists $chips]} return
     set state [expr {![::tg::bool [dict get $L enabled]] ? "Disabled" : ([dict get $L running] ? "Protecting" : "Not running")}]
     set tone [expr {$state eq "Protecting" ? "ok" : ($state eq "Disabled" ? "muted" : "bad")}]
@@ -561,6 +563,18 @@ proc ::tg::gui::updateListenerRow {L} {
         catch {destroy $chips.s}
         ::tg::kit::chip $chips.s $chips $state -tone $tone -dot 1
         pack $chips.s -side left -padx {8 0}
+    }
+    # HTTPS / certificate chip
+    set cs [certSummary $n]
+    set csig [join $cs |]
+    if {![info exists v(lrowTls,$n)] || $v(lrowTls,$n) ne $csig} {
+        set v(lrowTls,$n) $csig
+        catch {destroy $namerow.tls}
+        if {$cs ne ""} {
+            lassign $cs ctone cshort
+            ::tg::kit::chip $namerow.tls $namerow $cshort -tone $ctone
+            pack $namerow.tls -side left -padx {10 0}
+        }
     }
     $cn configure -text "[dict get $L conns] [expr {[dict get $L type] eq {udp} ? {sessions} : {connections}}]"
 }
@@ -588,6 +602,7 @@ proc ::tg::gui::applyConfig {c} {
     ::tg::engine::reload
     set lstSig "force"
     array unset ::tg::gui::v lrowState,*
+    array unset ::tg::gui::v lrowTls,*
     refreshFwPreview
     if {[llength $warns]} { msg warning "Note" [join $warns "\n\n"] }
     refresh
@@ -674,14 +689,64 @@ proc ::tg::gui::listenerFields {type} {
             }
         }
     }
-    list $common $adv
+    set tlsf {}
+    if {$type in {http tcp}} {
+        set tlsf {
+            {tls "Serve HTTPS (encrypted)" bool "TclGuard handles the encryption; your real server keeps speaking plain HTTP to it."}
+            {acme "Free automatic certificate" bool "Gets and renews a certificate from Let's Encrypt. Needs a real domain name pointing at this computer, and port 80 reachable from the internet (an HTTP protection on port 80 in this TclGuard answers the check)."}
+            {tlsNames "Domain name(s)" words "Separate with spaces, e.g.  example.com www.example.com  (no wildcards or IP addresses for automatic certificates)."}
+            {acmeEmail "E-mail for expiry notices" text "Optional. Let's Encrypt writes here if renewal ever fails."}
+            {tlsCert "Your own certificate file" text "Only if you bring your own (leave empty to use the automatic one). PEM file with the certificate and any intermediate certificates."}
+            {tlsKey "Your own private key file" text "PEM file that matches the certificate."}
+            {tlsMinVersion "Oldest TLS version" choice "1.3 is the safest. 1.2 also lets older browsers and devices connect." {1.2 1.3}}
+        }
+        if {$type eq "http"} {
+            lappend tlsf {redirectHttps "Send visitors to HTTPS" bool "Use on the plain port-80 protection: every request is redirected to the https:// address (certificate checks still work)."} \
+                         {redirectPort "HTTPS port to redirect to" int "Usually 443."}
+        }
+    }
+    list $common $adv $tlsf
+}
+
+# What to show about a TLS listener's certificate: {tone short long}, or {} if it is not a TLS listener.
+proc ::tg::gui::certSummary {name} {
+    set cl [::tg::cfg::listeners]
+    if {![dict exists $cl $name] || ![::tg::tls::enabled [dict get $cl $name]]} { return {} }
+    set L [dict get $cl $name]
+    set st [::tg::tls::certStatus $name]
+    set ac [::tg::acme::state $name]
+    if {![dict exists $st notAfter]} {
+        return [list bad "HTTPS not running" "The HTTPS listener is not running. [expr {[::tg::tls::available] ? {Check the log for the reason.} : {This build has no TLS support.}}]"]
+    }
+    set until [clock format [dict get $st notAfter] -format %Y-%m-%d -timezone :UTC]
+    set days [dict get $st daysLeft]
+    set names [join [dict get $st names] {, }]
+    if {[::tg::acme::enabled $L] && [dict get $st selfSigned]} {
+        switch -- [dict get $ac state] {
+            issuing { return [list warn "Getting certificate…" "Ordering a certificate from the certificate authority. Browsers warn until it arrives."] }
+            failed  { return [list bad "Certificate failed" "The certificate could not be obtained: [dict get $ac msg]\nTclGuard retries automatically; fix the cause (domain name, port 80) and press Get certificate now."] }
+            default { return [list warn "Temporary certificate" "A temporary self-signed certificate is in use; the automatic one is being requested."] }
+        }
+    }
+    if {[dict get $st selfSigned]} {
+        return [list warn "Self-signed certificate" "A self-signed certificate is in use: browsers show a warning. Valid until $until. Use your own certificate or the automatic option for a trusted one."]
+    }
+    if {$days < 14} {
+        return [list warn "Expires in $days days" "Certificate for $names expires on $until. [expr {[::tg::acme::enabled $L] ? {Renewal is attempted automatically.} : {Renew it and replace the files.}}]"]
+    }
+    list ok "HTTPS" "Certificate for $names is valid until $until ($days days left)."
+}
+
+proc ::tg::gui::certNow {name} {
+    ::tg::acme::requestNow $name
+    msg info "Certificate" "TclGuard will ask for the certificate within a few seconds. Watch the status here or the Activity page."
 }
 
 proc ::tg::gui::editListener {name} {
     variable v
     set spec [::tg::cfg::fillListener [dict get $::tg::cfg::current listeners $name]]
     set type [dict get $spec type]
-    lassign [listenerFields $type] common adv
+    lassign [listenerFields $type] common adv tlsf
     set f [::tg::kit::dialog edit "Edit $name"]
     set t [winfo toplevel $f]
     fr $f.h $f -bg surface
@@ -693,24 +758,31 @@ proc ::tg::gui::editListener {name} {
     pack $f.h.t -side left -padx {10 10}
     pack $f.h.c -side left
     set v(edTab) basic
-    ::tg::kit::segment $f.seg $f ::tg::gui::v(edTab) {{basic Basic} {limits {Limits and timeouts}}} -command [list ::tg::gui::editTab $f]
+    set tabs {{basic Basic}}
+    if {[llength $tlsf]} { lappend tabs {https HTTPS} }
+    lappend tabs {limits {Limits and timeouts}}
+    ::tg::kit::segment $f.seg $f ::tg::gui::v(edTab) $tabs -command [list ::tg::gui::editTab $f]
     pack $f.seg -anchor w -padx 24 -pady {8 8}
-    foreach {tab fields} [list basic $common limits $adv] {
+    set tabFields [list basic $common limits $adv]
+    if {[llength $tlsf]} { lappend tabFields https $tlsf }
+    foreach {tab fields} $tabFields {
         set sc [::tg::kit::scroll $f.$tab $f]
         $f.$tab.c configure -width [::tg::kit::px 700] -height [::tg::kit::px 400]
+        if {$tab eq "https"} { certPanel $sc $name }
         foreach fld $fields {
             lassign $fld key label kind hint choices
             set val [dict get $spec $key]
             if {$kind eq "bool"} { set val [expr {[::tg::bool $val] ? 1 : 0}] }
-            if {$kind eq "list"} { set val [join $val " "] }
+            if {$kind in {list words}} { set val [join $val " "] }
             set v(e,$key) $val
-            formRow $sc $key $label $hint $kind ::tg::gui::v(e,$key) -values $choices -hintwrap 330 -fieldw 17
+            if {$kind eq "words"} { set hw 250; set fw 28 } else { set hw 330; set fw 17 }
+            formRow $sc $key $label $hint $kind ::tg::gui::v(e,$key) -values $choices -hintwrap $hw -fieldw $fw
         }
     }
     pack $f.basic -fill both -expand 1
     fr $f.b $f -bg surface
     pack $f.b -fill x -padx 24 -pady {10 22}
-    ::tg::kit::button $f.b.ok $f.b "Save and apply" -style primary -command [list ::tg::gui::saveListener $t $name $type [concat $common $adv]]
+    ::tg::kit::button $f.b.ok $f.b "Save and apply" -style primary -command [list ::tg::gui::saveListener $t $name $type [concat $common $adv $tlsf]]
     ::tg::kit::button $f.b.c $f.b "Cancel" -style ghost -command [list destroy $t]
     pack $f.b.ok -side right
     pack $f.b.c -side right -padx {0 8}
@@ -718,8 +790,30 @@ proc ::tg::gui::editListener {name} {
 }
 
 proc ::tg::gui::editTab {f tab} {
-    pack forget $f.basic $f.limits
+    foreach t {basic https limits} { if {[winfo exists $f.$t]} { pack forget $f.$t } }
     pack $f.$tab -fill both -expand 1 -before $f.b
+}
+
+# Read-only certificate status at the top of the HTTPS tab.
+proc ::tg::gui::certPanel {sc name} {
+    set cs [certSummary $name]
+    fr $sc.cert $sc -bg surface2
+    pack $sc.cert -fill x -padx 20 -pady {12 4}
+    if {$cs eq ""} {
+        tx $sc.cert.t $sc.cert "HTTPS is not switched on for this protection. Turn it on below and save." -font body -fg muted -bg surface2 -wrap 600
+        pack $sc.cert.t -anchor w -padx 14 -pady 12
+        return
+    }
+    lassign $cs tone short long
+    ::tg::kit::chip $sc.cert.c $sc.cert $short -tone $tone -dot 1
+    pack $sc.cert.c -anchor w -padx 14 -pady {12 6}
+    tx $sc.cert.t $sc.cert $long -font body -bg surface2 -wrap 600
+    pack $sc.cert.t -anchor w -padx 14 -pady {0 10}
+    set L [dict get [::tg::cfg::listeners] $name]
+    if {[::tg::acme::enabled $L]} {
+        ::tg::kit::button $sc.cert.b $sc.cert "Get certificate now" -style secondary -command [list ::tg::gui::certNow $name]
+        pack $sc.cert.b -anchor w -padx 14 -pady {0 12}
+    }
 }
 
 proc ::tg::gui::saveListener {t name type fields} {
@@ -731,6 +825,7 @@ proc ::tg::gui::saveListener {t name type fields} {
         switch -- $kind {
             bool { set val [expr {[::tg::bool $val] ? 1 : 0}] }
             list { set val [::tg::ip::parseList $val] }
+            words { set val [lsearch -all -inline -not [split [string map {, { }} $val] " \t\n"] {}] }
             default { set val [string trim $val] }
         }
         dict set spec $key $val
@@ -745,7 +840,8 @@ proc ::tg::gui::saveListener {t name type fields} {
 proc ::tg::gui::presetSub {p} {
     set seen {}
     foreach s [dict get $::tg::cfg::presets($p) listeners] {
-        set x "[string toupper [dict get $s type]] [dict get $s port]"
+        set label [expr {[dict exists $s tls] && [::tg::bool [dict get $s tls]] ? "HTTPS" : [string toupper [dict get $s type]]}]
+        set x "$label [dict get $s port]"
         if {$x ni $seen} { lappend seen $x }
     }
     join $seen " + "
@@ -770,7 +866,7 @@ proc ::tg::gui::addWizard {} {
     fr $f.grid $f -bg surface
     pack $f.grid -padx 23
     set v(wizSel) [lindex $::tg::cfg::presetOrder 0]
-    set v(wizPub) ""; set v(wizBackend) ""; set v(wizHost) 127.0.0.1
+    set v(wizPub) ""; set v(wizBackend) ""; set v(wizHost) 127.0.0.1; set v(wizDomain) ""; set v(wizEmail) ""
     fr $f.form $f -bg surface
     pack $f.form -fill x -padx 28 -pady {14 0}
     set v(wizFormParent) $f.form
@@ -790,6 +886,7 @@ proc ::tg::gui::wizTiles {f} {
     foreach w [winfo children $f.grid] { destroy $w }
     set i 0
     foreach p $::tg::cfg::presetOrder {
+        if {[dict exists $::tg::cfg::presets($p) requiresTls] && ![::tg::tls::available]} continue
         set sel [expr {$p eq $v(wizSel)}]
         set bg [expr {$sel ? "accentSoft" : "surface2"}]
         set tile [::tg::kit::card $f.grid.t$i $f.grid -fill $bg -radius 12 -border 0]
@@ -831,6 +928,19 @@ proc ::tg::gui::wizForm {f} {
     set v(wizPub) [dict get $s port]; set v(wizBackend) [dict get $s backendPort]
     tx $fm.d $fm [dict get $pr description] -font small -fg muted -wrap 640
     pack $fm.d -anchor w -pady {0 10}
+    if {[dict exists $pr needsDomain]} {
+        fr $fm.r $fm -bg surface
+        pack $fm.r -fill x
+        foreach {id label kind var w} {a "Your domain name (e.g. example.com)" text ::tg::gui::v(wizDomain) 24 e "E-mail for expiry notices (optional)" text ::tg::gui::v(wizEmail) 24 b "Your real server listens on port" int ::tg::gui::v(wizBackend) 6 c "...on this address" text ::tg::gui::v(wizHost) 14} {
+            fr $fm.r.$id $fm.r -bg surface
+            tx $fm.r.$id.l $fm.r.$id $label -font small -fg muted -bg surface
+            if {$kind eq "int"} { ::tg::kit::stepper $fm.r.$id.e $fm.r.$id $var -width $w -step 1 } else { ::tg::kit::field $fm.r.$id.e $fm.r.$id $var -width $w }
+            pack $fm.r.$id.l -anchor w
+            pack $fm.r.$id.e -anchor w -pady {4 0}
+            pack $fm.r.$id -side left -padx {0 16}
+        }
+        return
+    }
     if {$multi} {
         tx $fm.m $fm "This preset sets up [llength $specs] listeners with the standard ports. Edit them afterwards from the Protection page." -font body -bg surface -wrap 640
         pack $fm.m -anchor w
@@ -852,7 +962,21 @@ proc ::tg::gui::wizAdd {t} {
     variable v
     set p $v(wizSel)
     set new [::tg::cfg::presetListeners $p [dict get $::tg::cfg::current listeners]]
-    if {[llength [dict keys $new]] == 1} {
+    if {[dict exists $::tg::cfg::presets($p) needsDomain]} {
+        set dom [string tolower [string trim $v(wizDomain)]]
+        if {![regexp {^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$} $dom]} {
+            msg error "Domain name" "Please enter the domain name visitors use, for example  example.com  (not an IP address)."
+            return
+        }
+        dict for {n s} $new {
+            dict set new $n backendPort [string trim $v(wizBackend)]
+            dict set new $n backendHost [string trim $v(wizHost)]
+            if {[dict exists $s acme]} {
+                dict set new $n tlsNames [list $dom]
+                dict set new $n acmeEmail [string trim $v(wizEmail)]
+            }
+        }
+    } elseif {[llength [dict keys $new]] == 1} {
         set n [lindex [dict keys $new] 0]
         dict set new $n port [string trim $v(wizPub)]
         dict set new $n backendPort [string trim $v(wizBackend)]

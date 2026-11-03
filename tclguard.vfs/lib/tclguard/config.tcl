@@ -163,6 +163,16 @@ namespace eval ::tg::cfg {
             {type http port 80 backendPort 8080}
         }
     }
+    set presets(website-https) {
+        title "HTTPS website (free certificate)"
+        description "HTTPS website with an automatic free certificate (Let's Encrypt). Sets up port 443 (encrypted) and port 80 (sends visitors to HTTPS and lets the certificate authority check your domain). Needs a domain name that points at this computer."
+        needsDomain 1
+        requiresTls 1
+        listeners {
+            {type http port 80 backendPort 8080 redirectHttps 1 redirectPort 443}
+            {type http port 443 backendPort 8080 tls 1 acme 1}
+        }
+    }
     set presets(website-tls) {
         title "HTTPS website (TLS passed through)"
         description "HTTPS website (port 443, TLS passed through untouched). Connection-level protection only."
@@ -250,7 +260,7 @@ namespace eval ::tg::cfg {
         }
     }
 
-    variable presetOrder {website website-tls minecraft-java minecraft-bedrock valheim
+    variable presetOrder {website website-https website-tls minecraft-java minecraft-bedrock valheim
         source-engine terraria factorio palworld rust ssh custom-tcp custom-udp}
 
     variable watcherPresets

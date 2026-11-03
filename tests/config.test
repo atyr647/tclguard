@@ -101,7 +101,12 @@ test preset-all-valid {every preset produces a valid config} -body {
     set bad {}
     foreach p $::tg::cfg::presetOrder {
         set c [::tg::cfg::new]
-        dict set c listeners [::tg::cfg::presetListeners $p]
+        set ls [::tg::cfg::presetListeners $p]
+        # presets that need a domain get one from the wizard
+        if {[dict exists $::tg::cfg::presets($p) needsDomain]} {
+            dict for {n sp} $ls { if {[dict exists $sp acme]} { dict set ls $n tlsNames example.com } }
+        }
+        dict set c listeners $ls
         set e [errsOf $c]
         if {$e ne ""} { lappend bad $p $e }
     }
