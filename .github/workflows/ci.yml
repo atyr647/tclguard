@@ -75,12 +75,6 @@ jobs:
             if ($code -ne 0) { $failed++; Write-Host "!! $t.test exit code $code" }
           }
           if ($failed) { throw "$failed unit test file(s) failed" }
-      - name: Probe - where does the starpack eval path stall?
-        timeout-minutes: 4
-        continue-on-error: true
-        run: |
-          $exe = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
-          pwsh -NoProfile -File tools\ci-bounded.ps1 -Exe $exe -Seconds 90 eval tests\platform\probe.tcl
       - name: Windows platform tests (real netsh, Task Scheduler, netstat)
         timeout-minutes: 10
         run: |

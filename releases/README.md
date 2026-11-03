@@ -31,7 +31,7 @@ Checked on **real GitHub-hosted runners** (Windows Server 2025 as administrator,
 | Kernel firewall rule install / ban / unban / remove | nftables, real kernel (22 checks) | **Windows Firewall via `netsh`, real rule lifecycle** | pf: 18 platform checks |
 | Live connection scan (`netstat`) | `/proc` | **parsed from a real Windows table** | parsed from BSD netstat |
 | Start at sign-in | XDG autostart entry | **Task Scheduler task created, read back, removed** | LaunchAgent |
-| GUI | Xvfb | **26 scripted flows on a real desktop** | 27 under Aqua |
+| GUI | Xvfb | **27 scripted flows on a real desktop** | 27 under Aqua |
 
 macOS has no starpack here: a macOS Tk kit has to be built on a Mac. It runs from source with Homebrew's Tcl/Tk 8.6 and
 tcludp (see `docs/DEPLOYMENT.md`), which is what the macOS runner tests.
