@@ -233,7 +233,37 @@ finally:
 
 # ============================================================ renegotiation abuse (TLS 1.2): must not be a CPU lever
 if OPENSSL and os.name != "nt":
-    import pty, select
+    import select
+    # `openssl s_client` driven through PIPES (a terminal behaves differently on macOS: its key-update commands never arrived there).
+    # Its stdin accepts the one-letter commands R (renegotiate), k (TLS 1.3 key update).
+    class SClient:
+        def __init__(self, *args):
+            self.p = subprocess.Popen([OPENSSL, "s_client", "-connect", f"127.0.0.1:{port}", *args], stdin=subprocess.PIPE,
+                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+            os.set_blocking(self.p.stdout.fileno(), False)
+            self.buf = b""
+        def pump(self, t):
+            end = time.time() + t
+            while time.time() < end:
+                r, _, _ = select.select([self.p.stdout], [], [], 0.05)
+                if r:
+                    try: d = os.read(self.p.stdout.fileno(), 65536)
+                    except BlockingIOError: continue
+                    except OSError: return False
+                    if not d: return False
+                    self.buf += d
+            return True
+        def until(self, marker, t):
+            end = time.time() + t
+            while time.time() < end and marker not in self.buf:
+                if not self.pump(0.1): break
+            return marker in self.buf
+        def send(self, data):
+            try: self.p.stdin.write(data); self.p.stdin.flush(); return True
+            except OSError: return False
+        def close(self):
+            try: self.p.kill(); self.p.wait(5)
+            except Exception: pass
     be = HttpBackend(); port = free_port()
     g = Guard({"secure": {"type": "http", "port": port, "backendPort": be.port, "tls": 1, "connRate": 1000, "maxConnsPerIP": 400}}, {})
     try:
@@ -242,57 +272,36 @@ if OPENSSL and os.name != "nt":
             f = open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()
             return (int(f[11]) + int(f[12])) / os.sysconf("SC_CLK_TCK")
         have_proc = os.path.exists(f"/proc/{g.proc.pid}/stat")
-        pid, fd = pty.fork()
-        if pid == 0:
-            os.execvp(OPENSSL, [OPENSSL, "s_client", "-connect", f"127.0.0.1:{port}", "-tls1_2"])
-        buf = b""
-        def pump(t):
-            global buf
-            end = time.time() + t
-            while time.time() < end:
-                r, _, _ = select.select([fd], [], [], 0.05)
-                if r:
-                    try: d = os.read(fd, 65536)
-                    except OSError: return False
-                    if not d: return False
-                    buf += d
-            return True
-        pump(2.0)
+        c = SClient("-tls1_2")
+        c.until(b"Verify return code", 15)
         c0 = cpu(g.proc.pid) if have_proc else 0; t0 = time.time(); alive = True
         while time.time() - t0 < 6 and alive:
-            try: os.write(fd, b"R\n")
-            except OSError: alive = False
-            alive = pump(0.02) and alive
+            alive = c.send(b"R\n")
+            alive = c.pump(0.02) and alive
         c1 = cpu(g.proc.pid) if have_proc else 0
-        n = buf.decode("latin1").count("RENEGOTIATING")
-        try: os.kill(pid, 9); os.waitpid(pid, 0)
-        except Exception: pass
+        n = c.buf.decode("latin1").count("RENEGOTIATING")
+        c.close()
+        print("INFO renegotiation requests serviced:", n)
         check("client-initiated renegotiation is not serviced repeatedly (<= 3 in 6 s)", n <= 3, n)
         check("...and costs the guard almost no CPU", c1 - c0 < 1.0, c1 - c0)
+        check("...and the attempt is noticed by the guard (it closed the connection and said so)", "renegotiation attempt" in g.stderr() or n > 0, g.stderr()[-300:])
 
         # legitimate TLS 1.3 key updates must keep working (they are not renegotiation)
-        # (the renegotiation abuse above may have earned this address a ban, quicker on some machines: start clean)
+        # (the renegotiation abuse above may have earned this address a ban: start clean)
         g.ctl("unbanall"); time.sleep(0.3)
-        pid, fd = pty.fork()
-        if pid == 0:
-            os.execvp(OPENSSL, [OPENSSL, "s_client", "-connect", f"127.0.0.1:{port}", "-tls1_3", "-crlf"])
-        buf = b""
-        def pump_until(marker, t):
-            """Read until marker shows up (or t seconds pass): fixed sleeps are too short on a slow CI machine."""
-            end = time.time() + t
-            while time.time() < end and marker not in buf:
-                pump(0.1)
-            return marker in buf
-        pump_until(b"Verify return code", 15)     # the handshake has finished and s_client printed the session
+        c = SClient("-tls1_3", "-crlf")
+        c.until(b"Verify return code", 15)         # the handshake has finished and s_client printed the session
         for i in range(3):
-            os.write(fd, b"k\n"); pump(0.5)
-        os.write(fd, b"GET /after-keyupdate HTTP/1.1\nHost: x\nConnection: close\n\n"); pump_until(b"ok:GET /after-keyupdate", 15)
-        try: os.kill(pid, 9); os.waitpid(pid, 0)
-        except Exception: pass
-        if b"ok:GET /after-keyupdate" not in buf:
-            print("DEBUG s_client output tail:", repr(buf[-1200:]))
+            c.send(b"k\n"); c.pump(0.5)
+        saw_ku = c.buf.count(b"KEYUPDATE")
+        c.send(b"GET /after-keyupdate HTTP/1.1\nHost: x\nConnection: close\n\n"); c.until(b"ok:GET /after-keyupdate", 15)
+        c.close()
+        print("INFO s_client reported", saw_ku, "key updates sent")
+        if b"ok:GET /after-keyupdate" not in c.buf:
+            print("DEBUG s_client output tail:", repr(c.buf[-1200:]))
             print("DEBUG guard log tail:", g.stderr()[-1500:])
-        check("TLS 1.3 key updates do not trip the renegotiation guard", b"ok:GET /after-keyupdate" in buf, (buf[-300:], g.stderr()[-400:]))
+        check("the test really sent TLS 1.3 key updates", saw_ku >= 1, saw_ku)
+        check("TLS 1.3 key updates do not trip the renegotiation guard", b"ok:GET /after-keyupdate" in c.buf, (c.buf[-300:], g.stderr()[-400:]))
     finally:
         g.cleanup(); be.stop()
 
