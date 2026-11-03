@@ -376,7 +376,8 @@ proc ::tg::http::parseHead {id block} {
         foreach c $cl {
             if {$c ne $first} { return {err 400 "conflicting Content-Length"} }
         }
-        if {![regexp {^[0-9]{1,15}$} $first]} { return {err 400 "invalid Content-Length"} }
+        # No leading zeros: a reader using strtol(s, 0, 0) takes "010" as octal 8 (we say 10).
+        if {![regexp {^(?:0|[1-9][0-9]{0,14})$} $first]} { return {err 400 "invalid Content-Length"} }
         scan $first %ld clen
         if {$clen > [dict get $Lc maxBodyMB] * 1048576} { return {err 413 "request body too large"} }
         if {$clen > 0} { set framing length }
@@ -427,11 +428,15 @@ proc ::tg::http::handleRequest {id block} {
         }
         # per-path limits (e.g. login brute force)
         set path [lindex [split $target ?#] 0]
+        set npath $path
+        if {[llength [dict get $Lc pathLimits]]} { set npath [normPath $path] }
         set i 0
         foreach pl [dict get $Lc pathLimits] {
             lassign $pl re cnt sec
             incr i
-            if {[regexp -- $re $path]} {
+            # Match the path as sent and as a backend will resolve it, or "//login", "/%6cogin",
+            # "/./login" walk around a "^/login" limit.
+            if {[regexp -- $re $path] || ($npath ne $path && [regexp -- $re $npath])} {
                 if {[::tg::rate::hit "p:$lname:$i:$ckey" [expr {$sec * 1000}]] > $cnt} {
                     ::tg::ban::strike $cip 1 "path limit $re on $lname"
                     blockedReq $id $ckey
@@ -464,18 +469,22 @@ proc ::tg::http::handleRequest {id block} {
         }
     }
     if {[::tg::bool [dict get $Lc forwardIp]]} {
-        set chain [::tg::ip::norm $peer]
+        set prior {}
         foreach h [dict get $d headers] {
             lassign $h ln hn hv raw
             # also catch X_Real_IP style spellings that some backends fold to X-Real-IP
-            set ln [string map {_ -} $ln]
-            if {$ln in {x-real-ip forwarded}} continue
-            if {$ln eq "x-forwarded-for"} {
-                if {$viaProxy} { set chain "$hv, $chain" }
+            set fold [string map {_ -} $ln]
+            if {$fold in {x-real-ip forwarded}} continue
+            if {$fold eq "x-forwarded-for"} {
+                # Behind a trusted proxy its lines are the history of the request. Keep them in the
+                # order received (RFC 9110 5.3) and only for the exact spelling the client address was
+                # taken from: "X_Forwarded_For: 1.2.3.4" is not part of that chain.
+                if {$viaProxy && $ln eq "x-forwarded-for"} { lappend prior $hv }
                 continue
             }
             append out "\r\n$raw"
         }
+        set chain [join [concat $prior [list [::tg::ip::norm $peer]]] ", "]
         append out "\r\nX-Forwarded-For: $chain\r\nX-Real-IP: [::tg::ip::norm $cip]\r\n\r\n"
     } else {
         set out [string range $block 0 end]
@@ -503,6 +512,30 @@ proc ::tg::http::handleRequest {id block} {
         set ::tg::tcp::dl($id) [expr {[::tg::now] + [dict get $Lc bodyTimeout] * 1000}]
     }
     return ok
+}
+
+# The path the way a backend resolves it: %XX decoded, "\" read as "/", ";params" and empty or
+# "." segments dropped, ".." applied. Used only to match per-path limits.
+proc ::tg::http::normPath {path} {
+    set parts [split $path %]
+    set d [lindex $parts 0]
+    foreach p [lrange $parts 1 end] {
+        if {[regexp {^([0-9a-fA-F]{2})(.*)$} $p -> hx rest]} {
+            append d [format %c [scan $hx %x]] $rest
+        } else {
+            append d % $p
+        }
+    }
+    set out {}
+    foreach seg [split [string map {\\ /} $d] /] {
+        set seg [lindex [split $seg {;}] 0]
+        if {$seg eq "" || $seg eq "."} continue
+        if {$seg eq ".."} { set out [lrange $out 0 end-1]; continue }
+        lappend out $seg
+    }
+    set r "/[join $out /]"
+    if {[string index $d end] eq "/" && [llength $out]} { append r / }
+    return $r
 }
 
 proc ::tg::http::blockedReq {id ckey} {
