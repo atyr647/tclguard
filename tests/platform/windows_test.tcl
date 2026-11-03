@@ -69,13 +69,19 @@ if {$admin} {
     puts "INFO $N bans -> firewall in ${ms1} ms (lastError: '$::tg::fw::lastError')"
     proc ruleExists {n} { expr {![catch {exec netsh advfirewall firewall show rule name=$n} out] && ![string match "*No rules match*" $out]} }
     check "all $N bans were accepted by netsh (no error)" [expr {$::tg::fw::lastError eq ""}] $::tg::fw::lastError
-    check "rule 1 exists" [ruleExists "TclGuard Bans"]
-    check "rule 3 exists (800 addresses per rule)" [ruleExists "TclGuard Bans 3"]
-    check "rule 4 exists (2500 bans need 4 rules)" [ruleExists "TclGuard Bans 4"]
-    check "rule 5 does not exist" [expr {![ruleExists "TclGuard Bans 5"]}]
+    set nr [llength $::tg::fw::netshHave]
+    puts "INFO the bans were spread over $nr rules"
+    check "the bans need several rules ($nr)" [expr {$nr >= 4}] $nr
+    set missing {}
+    for {set k 1} {$k <= $nr} {incr k} { if {![ruleExists [::tg::fw::netshName $k]]} { lappend missing $k } }
+    check "every one of those rules exists in the real Windows Firewall" [expr {![llength $missing]}] $missing
+    check "there is no rule beyond them" [expr {![ruleExists [::tg::fw::netshName [expr {$nr + 1}]]]}]
     set last 20.[expr {($N - 1) / 60000 + 1}].[expr {(($N - 1) / 250) % 240 + 1}].[expr {($N - 1) % 250 + 1}]
-    set rc [catch {exec netsh advfirewall firewall show rule name="TclGuard Bans 4" verbose} out4]
-    check "the last banned address ($last) is inside the last rule" [string match "*$last*" $out4] [string range $out4 0 200]
+    set found 0
+    for {set k 1} {$k <= $nr} {incr k} {
+        if {![catch {exec netsh advfirewall firewall show rule name=[::tg::fw::netshName $k] verbose} outk] && [string match "*$last*" $outk]} { set found $k }
+    }
+    check "the last banned address ($last) is inside one of the rules" [expr {$found > 0}] $found
     check "applying 2500 bans finished in a reasonable time (< 120 s)" [expr {$ms1 < 120000}] $ms1
     # shrink: keep 100 bans, the extra rules must disappear
     set t0 [clock milliseconds]
@@ -85,7 +91,9 @@ if {$admin} {
     ::tg::fw::commit
     puts "INFO shrink to 100 bans in [expr {[clock milliseconds] - $t0}] ms"
     check "after the bans expire, rule 1 remains" [ruleExists "TclGuard Bans"]
-    check "...and rules 2-4 are removed" [expr {![ruleExists "TclGuard Bans 2"] && ![ruleExists "TclGuard Bans 3"] && ![ruleExists "TclGuard Bans 4"]}]
+    set stale {}
+    for {set k 2} {$k <= $nr} {incr k} { if {[ruleExists [::tg::fw::netshName $k]]} { lappend stale $k } }
+    check "...and the other rules are removed" [expr {![llength $stale]}] $stale
     # a new process (restart) finds rules left behind
     ::tg::ban::add 20.200.1.1 "ci" 900 manual
     set ::tg::fw::netshHave {}; set ::tg::fw::netshKnown 0

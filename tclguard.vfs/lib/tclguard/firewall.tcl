@@ -33,8 +33,10 @@ namespace eval ::tg::fw {
     variable table tclguard
     variable ruleName "TclGuard Bans"
     variable netshDirty 0
-    variable netshPerRule 800        ;# addresses per rule: keeps each netsh command far below the 32 K command-line limit
-    variable netshMaxRules 24       ;# 24 x 800 = 19,200 banned addresses in the Windows Firewall
+    variable netshPerRule 800        ;# at most this many addresses per rule ...
+    variable netshMaxChars 6000     ;# ... and at most this many characters of address list: netsh itself rejects a longer
+                                    ;# command line (it printed its usage help for ~11 KB on a real Windows runner)
+    variable netshMaxRules 64       ;# roughly 64 x 500 = 32,000 banned IPv4 addresses in the Windows Firewall
     variable netshHave {}           ;# rule names that exist (maintained here; rediscovered at startup)
     variable netshKnown 0
     variable reinstallAt -100000   ;# last automatic reinstall (ms), rate limiter
@@ -454,6 +456,7 @@ proc ::tg::fw::netshApply {} {
     variable netshDirty
     variable active
     variable netshPerRule
+    variable netshMaxChars
     variable netshMaxRules
     variable netshHave
     variable netshKnown
@@ -462,16 +465,32 @@ proc ::tg::fw::netshApply {} {
     set netsh [which netsh]
     if {!$netshKnown} { netshDiscover }
     set keys [lsort [array names active]]
-    set cap [expr {$netshPerRule * $netshMaxRules}]
-    if {[llength $keys] > $cap} {
-        ::tg::log::warn "Windows Firewall holds at most $cap banned addresses; [expr {[llength $keys] - $cap}] bans are enforced by TclGuard proxies only"
-        set keys [lrange $keys 0 [expr {$cap - 1}]]
+    # split the addresses into rules by total length (and count)
+    set chunks {}
+    set cur {}
+    set curLen 0
+    foreach k $keys {
+        set add [expr {[string length $k] + 1}]
+        if {[llength $cur] && ([llength $cur] >= $netshPerRule || $curLen + $add > $netshMaxChars)} {
+            lappend chunks $cur
+            set cur {}
+            set curLen 0
+        }
+        lappend cur $k
+        incr curLen $add
+    }
+    if {[llength $cur]} { lappend chunks $cur }
+    if {[llength $chunks] > $netshMaxRules} {
+        set dropped 0
+        foreach c [lrange $chunks $netshMaxRules end] { incr dropped [llength $c] }
+        ::tg::log::warn "Windows Firewall holds at most $netshMaxRules rules of banned addresses; $dropped bans are enforced by TclGuard proxies only"
+        set chunks [lrange $chunks 0 [expr {$netshMaxRules - 1}]]
     }
     set n 0
-    for {set i 0} {$i < [llength $keys]} {incr i $netshPerRule} {
+    foreach chunk $chunks {
         incr n
         set name [netshName $n]
-        set ips [join [lrange $keys $i [expr {$i + $netshPerRule - 1}]] ,]
+        set ips [join $chunk ,]
         # a rule we did not create in this run might exist anyway (never create duplicates: same name = same rule to netsh)
         if {$name ni $netshHave} {
             lassign [run [list $netsh advfirewall firewall show rule name=$name]] exists
@@ -483,7 +502,7 @@ proc ::tg::fw::netshApply {} {
             lassign [run [list $netsh advfirewall firewall add rule name=$name dir=in action=block enable=yes profile=any remoteip=$ips]] rc out
             if {$rc == 0} { lappend netshHave $name }
         }
-        if {$rc != 0} { set lastError "netsh failed: [string trim $out]"; return 0 }
+        if {$rc != 0} { set lastError "netsh failed: [string trim [string range $out 0 300]]"; return 0 }
     }
     # rules that are not needed any more (bans expired) are removed
     set needed {}

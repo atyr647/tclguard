@@ -220,41 +220,47 @@ test fw-netsh-empty-removes-rule {} -setup {setupFw netsh {} $L} -body {
     lrange [lindex $::cmds end 0] 1 end
 } -result {advfirewall firewall delete rule {name=TclGuard Bans}}
 
-test fw-netsh-chunks {thousands of bans are split over several rules, every command stays short} -setup {setupFw netsh {} $L} -body {
+test fw-netsh-chunks {thousands of bans are split over several rules; netsh never gets a long command line} -setup {setupFw netsh {} $L} -body {
     set ::failIf [list [list {*show rule*} 1 {No rules match}]]
     ::tg::fw::sync
     for {set i 0} {$i < 2000} {incr i} { ::tg::ban::add 20.[expr {$i / 250}].[expr {$i % 250}].1 x 600 }
     set ::cmds {}
     ::tg::fw::commit
-    set adds {}; set maxlen 0
+    set names {}; set total 0; set maxips 0; set maxcmd 0
     foreach c $::cmds {
         set a [lindex $c 0]
         if {"add" in $a} {
-            set name [string range [lsearch -inline $a name=*] 5 end]
+            lappend names [string range [lsearch -inline $a name=*] 5 end]
             set ips [string range [lsearch -inline $a remoteip=*] 9 end]
-            lappend adds "$name:[llength [split $ips ,]]"
-            set maxlen [expr {max($maxlen, [string length [join $a " "]])}]
+            incr total [llength [split $ips ,]]
+            set maxips [expr {max($maxips, [string length $ips])}]
+            set maxcmd [expr {max($maxcmd, [string length [join $a " "]])}]
         }
     }
-    join [list [join $adds " | "] [expr {$maxlen < 20000 ? "short" : "TOO LONG"}]] " | "
-} -result {TclGuard Bans:800 | TclGuard Bans 2:800 | TclGuard Bans 3:400 | short}
+    set want {"TclGuard Bans"}
+    for {set k 2} {$k <= [llength $names]} {incr k} { lappend want "TclGuard Bans $k" }
+    list [expr {$names eq $want}] [expr {[llength $names] >= 3}] $total [expr {$maxips <= 6000}] [expr {$maxcmd < 6500}]
+} -result {1 1 2000 1 1}
 
 test fw-netsh-chunks-shrink {rules that are no longer needed are deleted} -setup {setupFw netsh {} $L} -body {
     set ::failIf [list [list {*show rule*} 1 {No rules match}]]
     ::tg::fw::sync
     for {set i 0} {$i < 1700} {incr i} { ::tg::ban::add 20.[expr {$i / 250}].[expr {$i % 250}].1 x 600 }
     ::tg::fw::commit
+    set have [llength $::tg::fw::netshHave]
     for {set i 100} {$i < 1700} {incr i} { ::tg::ban::remove 20.[expr {$i / 250}].[expr {$i % 250}].1 }
     set ::cmds {}
     ::tg::fw::commit
     set dels {}; set sets {}
     foreach c $::cmds {
         set a [lindex $c 0]
-        if {"delete" in $a} { lappend dels [lsearch -inline $a name=*] }
-        if {"set" in $a} { lappend sets [lsearch -inline $a name=*] }
+        if {"delete" in $a} { lappend dels [string range [lsearch -inline $a name=*] 5 end] }
+        if {"set" in $a} { lappend sets [string range [lsearch -inline $a name=*] 5 end] }
     }
-    list $sets $dels
-} -result {{{name=TclGuard Bans}} {{name=TclGuard Bans 2} {name=TclGuard Bans 3}}}
+    set wantDel {}
+    for {set k 2} {$k <= $have} {incr k} { lappend wantDel "TclGuard Bans $k" }
+    list [expr {$have >= 3}] $sets [expr {$dels eq $wantDel}] [llength $::tg::fw::netshHave]
+} -result {1 {{TclGuard Bans}} 1 1}
 
 test fw-netsh-chunks-leftovers {rules left by a previous run are found and reused, not duplicated} -setup {setupFw netsh {} $L} -body {
     # "show rule" succeeds for rules 1 and 2 (left over), fails for 3
@@ -276,7 +282,7 @@ test fw-netsh-beyond-capacity {more bans than the firewall can hold are capped w
     set ok [::tg::fw::commit]
     set n 0
     foreach c $::cmds { if {"add" in [lindex $c 0]} { incr n } }
-    set ::tg::fw::netshPerRule 800; set ::tg::fw::netshMaxRules 24
+    set ::tg::fw::netshPerRule 800; set ::tg::fw::netshMaxRules 64
     list $n
 } -result 2
 
