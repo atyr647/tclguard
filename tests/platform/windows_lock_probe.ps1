@@ -1,7 +1,7 @@
 # Facts about a RUNNING starpack on Windows: which operations does the operating system allow on its file while it
 # runs? (A starpack keeps its own file open to read the virtual file system it carries.)  Prints one line each.
 #   powershell -File windows_lock_probe.ps1 <path-to-starpack-console.exe>
-param([string]$Exe)
+param([string]$Starpack)
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
 $w = Join-Path $env:RUNNER_TEMP 'lockprobe'
@@ -38,7 +38,7 @@ Stop-Process -Id $p0.Id -Force -ErrorAction SilentlyContinue
 
 # the starpack, running a script that just waits
 $exe = Join-Path $w 'tg.exe'
-Copy-Item -LiteralPath $Exe -Destination $exe
+Copy-Item -LiteralPath $Starpack -Destination $exe
 $script = Join-Path $w 'wait.tcl'
 Set-Content -Path $script -Value 'after 40000 {set ::done 1}; vwait ::done' -Encoding ASCII
 $p1 = Start-Process -FilePath $exe -ArgumentList 'eval',$script -PassThru -WindowStyle Hidden

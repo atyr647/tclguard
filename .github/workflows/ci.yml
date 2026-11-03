@@ -105,7 +105,6 @@ jobs:
           .\releases\tclguard-windows-x86_64-console.exe selftest
       - name: Starpack - unit tests with the Tcl that ships inside it
         timeout-minutes: 10
-        continue-on-error: true
         run: |
           $exe = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
           $failed = 0
@@ -113,8 +112,11 @@ jobs:
             Write-Host "=== $t.test"
             $out = pwsh -NoProfile -File tools\ci-bounded.ps1 -Exe $exe -Seconds 120 eval "tests\$t.test" 2>&1 | Out-String
             $code = $LASTEXITCODE
-            ($out -split "`n" | Select-String 'Total|FAILED|====|rror|exit|killing' | Select-Object -First 40) | ForEach-Object { $_.Line }
-            if ($code -ne 0) { $failed++; Write-Host "!! $t.test exit code $code" }
+            ($out -split "`n" | Select-String 'Total|FAILED' | Select-Object -First 40) | ForEach-Object { $_.Line }
+            if ($code -ne 0) {
+              $failed++; Write-Host "!! $t.test exit code $code; last lines of its output:"
+              ($out -split "`n" | Select-Object -Last 40) | ForEach-Object { $_.TrimEnd() }
+            }
           }
           if ($failed) { throw "$failed unit test file(s) failed" }
       - name: Windows platform tests (real netsh, Task Scheduler, netstat)
@@ -327,7 +329,13 @@ jobs:
           find "$HOME/tclpkgs" -name '*.dylib' -print
           for f in $(find "$HOME/tclpkgs" -name '*.dylib'); do otool -L "$f"; done
           echo "---- the same probe under lldb (backtrace of a crash)"
-          lldb -b -o run -o "bt 25" -o "register read" -- $TCLSH tests/platform/tls_probe.tcl 2>&1 | tail -60 || true
+          lldb -b -o run -o "register read pc lr sp" -o 'image lookup -a $lr' -o 'image lookup -a $pc' -o "bt 30" -- $TCLSH tests/platform/tls_probe.tcl 2>&1 | tail -40 || true
+          echo "---- one variant per process"
+          for v in socket-server socket-client import-bare import-server-blocking import-cmd; do
+            $TCLSH tests/platform/tls_variants.tcl $v 2>&1 | tail -4; echo "  -> exit status ${PIPESTATUS[0]}"
+          done
+          echo "---- which Tcl does tclsh link, and is anything else providing tls?"
+          otool -L $TCLSH | head; $TCLSH <<< 'puts [info library]; puts $auto_path; puts [package ifneeded tls 1.7.22]' || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:

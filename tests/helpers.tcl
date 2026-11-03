@@ -12,3 +12,7 @@ proc freezeClock {} {
     set ::tg::fakeBase 1700000000000
     proc ::tg::now {} { expr {$::tg::fakeBase + $::tg::clockSkew} }
 }
+
+# The install/update unit tests simulate a Unix machine with shell scripts, chmod and /bin paths; on real Windows those
+# are covered by tests/platform/windows_install_test.tcl, which uses the real program, registry and Task Scheduler.
+testConstraint unix [expr {$::tcl_platform(platform) eq "unix"}]

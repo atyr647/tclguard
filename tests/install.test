@@ -92,7 +92,7 @@ proc cmdsMatching {glob} { lsearch -all -inline -glob $::cmds $glob }
 
 # ============================================================================== path safety ====
 
-test inst-unsafe-unix {dangerous paths are refused, normal ones accepted (unix rules)} -setup {
+test inst-unsafe-unix {dangerous paths are refused, normal ones accepted (unix rules)} -constraints unix -setup {
     set d [sandbox]
 } -body {
     set r {}
@@ -139,7 +139,7 @@ test inst-refuse-dangerous-dir {install into /, the home folder or a system fold
 
 # ================================================================================== plan ====
 
-test inst-plan-linux-user {user plan lists the copy, the menu entry and the record, and changes nothing} -setup {
+test inst-plan-linux-user {user plan lists the copy, the menu entry and the record, and changes nothing} -constraints unix -setup {
     set d [sandbox]
 } -body {
     set steps [::tg::install::plan {scope user}]
@@ -150,7 +150,7 @@ test inst-plan-linux-user {user plan lists the copy, the menu entry and the reco
         [expr {[lsearch -glob $steps "*systemd*"] < 0}]
 } -result {0 0 1 1 1 1}
 
-test inst-plan-linux-system-service {system plan with a service names the unit, systemctl and the starter config} -setup {
+test inst-plan-linux-system-service {system plan with a service names the unit, systemctl and the starter config} -constraints unix -setup {
     set d [sandbox]
     set ::tg::install::elevatedOverride 1
 } -body {
@@ -168,7 +168,7 @@ test inst-plan-default-scope {scope follows elevation when not given} -setup {
     list [string match "*home/.local/bin*" $a] [string match "*root/usr/local/bin*" $b]
 } -result {1 1}
 
-test inst-plan-needs-root {a system install without root explains why} -setup {
+test inst-plan-needs-root {a system install without root explains why} -constraints unix -setup {
     set d [sandbox]
 } -body {
     set steps [::tg::install::plan {scope system}]
@@ -196,7 +196,7 @@ test inst-options-validated {bad options give messages instead of raising} -setu
 
 # ============================================================================ Linux install ====
 
-test inst-linux-user-install {user install copies the program, writes a menu entry and the record} -setup {
+test inst-linux-user-install {user install copies the program, writes a menu entry and the record} -constraints unix -setup {
     set d [sandbox]
 } -body {
     set e [::tg::install::run {scope user}]
@@ -208,7 +208,7 @@ test inst-linux-user-install {user install copies the program, writes a menu ent
         [lsort [rel $d [lmap x [pathsOf $rec] {file normalize $x}]]] [llength $::cmds]
 } -result {{} 1 1 1 1 user 1.0.0 {home/.local home/.local/bin home/.local/bin/tclguard home/.local/share home/.local/share/applications home/.local/share/applications/tclguard.desktop home/.local/share/tclguard} 0}
 
-test inst-linux-desktop-entry {the desktop entry is valid and quotes unusual paths} -setup {
+test inst-linux-desktop-entry {the desktop entry is valid and quotes unusual paths} -constraints unix -setup {
     set d [sandbox]
     set weird "$d/my apps/it's \"x\" 100%/\$HOME"
 } -body {
@@ -226,7 +226,7 @@ test inst-linux-refuses-injection {a path with a newline cannot reach a desktop 
     list [string match "refusing*control characters*" $r] [llength [tree $d/home]]
 } -result {1 0}
 
-test inst-idempotent {installing twice changes nothing and keeps one record entry per item} -setup {
+test inst-idempotent {installing twice changes nothing and keeps one record entry per item} -constraints unix -setup {
     set d [sandbox]
 } -body {
     set rec $d/home/.local/share/tclguard/install.json
@@ -237,7 +237,7 @@ test inst-idempotent {installing twice changes nothing and keeps one record entr
     list $e1 $e2 [expr {[tree $d/home] eq $before}] [expr {[recItems $rec] eq $items1}] [llength [glob -nocomplain $d/home/.local/bin/*.new*]]
 } -result {{} {} 1 1 0}
 
-test inst-reinstall-newer {a newer program replaces the old one atomically and the record stays whole} -setup {
+test inst-reinstall-newer {a newer program replaces the old one atomically and the record stays whole} -constraints unix -setup {
     set d [sandbox]
 } -body {
     ::tg::install::run {scope user}
@@ -246,7 +246,7 @@ test inst-reinstall-newer {a newer program replaces the old one atomically and t
     list $e [readBytes $d/home/.local/bin/tclguard] [llength [glob -nocomplain $d/home/.local/bin/*]] [file executable $d/home/.local/bin/tclguard]
 } -result "{} {\x7fELF fake program version 2 (bigger)\n} 1 1"
 
-test inst-foreign-file-protected {a file at the target that TclGuard did not install is not overwritten without force} -setup {
+test inst-foreign-file-protected {a file at the target that TclGuard did not install is not overwritten without force} -constraints unix -setup {
     set d [sandbox]
     writeBytes $d/home/.local/bin/tclguard "#!/bin/sh\necho my own wrapper\n"
 } -body {

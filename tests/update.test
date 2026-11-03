@@ -1,4 +1,9 @@
 source [file join [file dirname [info script]] helpers.tcl]
+if {$::tcl_platform(platform) eq "windows"} {
+    # (fake programs are shell scripts, permissions are chmod bits.) Real Windows is covered by
+    # tests/platform/windows_install_test.tcl (phase update) and tests/integration/test_update_starpack.py.
+    puts "update.test: Windows: skipped"; exit 0
+}
 loadmods util config crypto json
 # update.tcl uses ::http only inside fetch, which these tests replace with an in-memory server.
 loadmods install nativefs update
