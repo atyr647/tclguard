@@ -4,6 +4,7 @@
 # A tclkit is a single executable containing Tcl, Tk, and a virtual file system. TclGuard needs
 #   Tk        (the GUI; headless mode works without it)
 #   udp       (tcludp, for the game-server UDP relay)
+#   tls       (tcltls + static LibreSSL: HTTPS termination and the self-update downloader)
 #   Thread    (bundled by Tcl 8.6; reserved for the optional worker design)
 #   vfs::mk4  (Metakit storage; used by build.tcl to write the starpack payload)
 # The prebuilt kits on the internet are old and lack Tk/udp, so build one with KitCreator.
@@ -24,7 +25,8 @@ cd kc
 # Generate the kitsh configure script (the fossil tarball ships without it). NOTE: this runs
 # 'kitcreator distclean', so do it before building, never between a build and its output.
 bash build/pre.sh >/dev/null 2>&1 || true
-export KITCREATOR_PKGS='tk itcl mk4tcl udp'
+export KITCREATOR_PKGS='tk itcl mk4tcl udp tls'
+export KC_TLS_BUILDSSL=1     # build LibreSSL from source and link it statically into tcltls
 case $target in
   linux) ./kitcreator 8.6.14 --enable-64bit ;;
   win64)

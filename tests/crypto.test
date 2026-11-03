@@ -1,0 +1,126 @@
+source [file join [file dirname [info script]] helpers.tcl]
+loadmods util config crypto
+set ::tg::log::stderr 0
+
+# RFC 6979 appendix A.2.5: P-256 / SHA-256 / message "sample"
+set d [expr {0xC9AFA9D845BA75166B5C215767B1D6934E50C3DB36E89B127B8A622B120F6721}]
+set key [::tg::crypto::keyFromPrivate $d]
+
+test pub-point {public key from the RFC 6979 private key} -body {
+    list [format %llX [dict get $key x]] [format %llX [dict get $key y]]
+} -result {60FED4BA255A9D31C961EB74C6356D68C049B8923B61FA6CE669622E60F29FB6 7903FE1008B8BC99A41AE9E95628BC64F2F1B20C2D7E9F5177A3C294D4462299}
+
+test rfc6979-k {deterministic nonce matches the RFC} -body {
+    format %llX [::tg::crypto::nonce $d [::tg::crypto::sha256 sample]]
+} -result A6E3C57DD01ABE90086538398355DD4C3B17AA873382B0F24D6129493D8AAD60
+
+test rfc6979-sig {signature matches the RFC} -body {
+    lassign [::tg::crypto::signInts $key sample] r s
+    list [format %llX $r] [format %llX $s]
+} -result {EFD48B2AACB6A8FD1140DD9CD45E81D69D2C877B56AAF991C34D0EA84EAF3716 F7CB1C942D657C41D436C7A1B6E29F65F3E900DBB9AFF4064DC4AB2F843ACDA8}
+
+test verify-ok {a good signature verifies; a changed message or key does not} -body {
+    set x [dict get $key x]; set y [dict get $key y]
+    lassign [::tg::crypto::signInts $key sample] r s
+    set other [::tg::crypto::keyFromPrivate 12345]
+    list [::tg::crypto::verifyInts $x $y sample $r $s] \
+         [::tg::crypto::verifyInts $x $y sampl3 $r $s] \
+         [::tg::crypto::verifyInts [dict get $other x] [dict get $other y] sample $r $s] \
+         [::tg::crypto::verifyInts $x $y sample $r [expr {$s + 1}]]
+} -result {1 0 0 0}
+
+test verify-garbage {malformed signatures are rejected, never raise} -body {
+    set x [dict get $key x]; set y [dict get $key y]
+    list [::tg::crypto::verifyDer $x $y m "garbage"] [::tg::crypto::verifyDer $x $y m ""] \
+         [::tg::crypto::verifyRaw $x $y m "short"] [::tg::crypto::verifyInts $x $y m 0 5] \
+         [::tg::crypto::verifyInts 1 2 m 3 4]
+} -result {0 0 0 0 0}
+
+test der-int {minimal two's complement integers} -body {
+    list [binary encode hex [::tg::crypto::derInt 0]] [binary encode hex [::tg::crypto::derInt 127]] \
+         [binary encode hex [::tg::crypto::derInt 128]] [binary encode hex [::tg::crypto::derInt 256]]
+} -result {020100 02017f 02020080 02020100}
+
+test der-oid {object identifiers round-trip} -body {
+    set o [::tg::crypto::derOid 1.2.840.113549.1.9.14]
+    list [binary encode hex $o] [::tg::crypto::oidString [lindex [::tg::crypto::derRead $o 0] 1]]
+} -result {06092a864886f70d01090e 1.2.840.113549.1.9.14}
+
+test der-long-length {lengths over 127 bytes} -body {
+    set t [::tg::crypto::derTag 4 [string repeat a 300]]
+    list [binary encode hex [string range $t 0 3]] [string length [lindex [::tg::crypto::derRead $t 0] 1]]
+} -result {0482012c 300}
+
+test der-truncated {a truncated structure is an error, not a crash} -body {
+    catch {::tg::crypto::derRead "\x30\x20abc" 0} msg
+    set msg
+} -result {DER truncated}
+
+test key-pem-roundtrip {private key PEM round-trips} -body {
+    set k [::tg::crypto::newKey]
+    set k2 [::tg::crypto::keyFromPem [::tg::crypto::keyToPem $k]]
+    list [expr {[dict get $k d] == [dict get $k2 d]}] [expr {[dict get $k x] == [dict get $k2 x]}] \
+         [::tg::crypto::onCurve [dict get $k x] [dict get $k y]]
+} -result {1 1 1}
+
+test selfsigned-info {self-signed certificate carries what we put in it} -body {
+    set k [::tg::crypto::newKey]
+    set c [::tg::crypto::selfSigned $k {example.test www.example.test 192.0.2.7} 30]
+    set i [::tg::crypto::certInfo $c]
+    list [dict get $i cn] [dict get $i names] \
+         [expr {abs([dict get $i notAfter] - [clock add [clock seconds] 30 days]) < 5}] \
+         [expr {[dict get $i notBefore] < [clock seconds]}]
+} -result {example.test {example.test www.example.test 192.0.2.7} 1 1}
+
+test selfsigned-signature {the certificate's own signature verifies with its own key} -body {
+    set k [::tg::crypto::newKey]
+    set der [::tg::crypto::unpem [::tg::crypto::selfSigned $k {a.test}] CERTIFICATE]
+    lassign [::tg::crypto::derRead $der 0] t body
+    lassign [::tg::crypto::derChildren $body] tbs alg sig
+    # tbs must be re-encoded exactly as signed: take the raw bytes of the first child
+    lassign [::tg::crypto::derRead $body 0] t2 b2 end
+    set tbsRaw [string range $body 0 [expr {$end - 1}]]
+    set sigDer [string range [lindex $sig 1] 1 end]
+    ::tg::crypto::verifyDer [dict get $k x] [dict get $k y] $tbsRaw $sigDer
+} -result 1
+
+test jws-thumbprint {thumbprint is the SHA-256 of the canonical JWK} -body {
+    set j [::tg::crypto::jwk $key]
+    list [expr {[::tg::crypto::thumbprint $key] eq [::tg::crypto::b64u [::tg::crypto::sha256 $j]]}] \
+         [regexp {^\{"crv":"P-256","kty":"EC","x":"[A-Za-z0-9_-]{43}","y":"[A-Za-z0-9_-]{43}"\}$} $j]
+} -result {1 1}
+
+test jws-verify {a JWS signature verifies over protected.payload} -body {
+    set body [::tg::crypto::jws $key {{"alg":"ES256"}} {{"a":1}}]
+    regexp {"protected":"([^"]+)","payload":"([^"]+)","signature":"([^"]+)"} $body -> p c s
+    ::tg::crypto::verifyRaw [dict get $key x] [dict get $key y] $p.$c [::tg::crypto::b64uDecode $s]
+} -result 1
+
+test b64u-roundtrip {base64url without padding} -body {
+    set out {}
+    foreach n {0 1 2 3 4 31 32 33} {
+        set b [string repeat \xfb $n]
+        lappend out [expr {[::tg::crypto::b64uDecode [::tg::crypto::b64u $b]] eq $b}]
+    }
+    set out
+} -result {1 1 1 1 1 1 1 1}
+
+# Interoperability with the real thing, when an openssl binary is around.
+set ::openssl [auto_execok openssl]
+test openssl-interop {openssl accepts our key, certificate, request and signature} -constraints {} -setup {
+    set dir [makeDirectory ossl]
+} -body {
+    if {$::openssl eq ""} { return skipped }
+    set k [::tg::crypto::newKey]
+    foreach {f data} [list key.pem [::tg::crypto::keyToPem $k] cert.pem [::tg::crypto::selfSigned $k {example.test 192.0.2.7}]] {
+        set fh [open [file join $dir $f] w]; puts -nonewline $fh $data; close $fh
+    }
+    set fh [open [file join $dir csr.der] wb]; puts -nonewline $fh [::tg::crypto::csr $k {example.test}]; close $fh
+    set r {}
+    lappend r [catch {exec {*}$::openssl ec -in [file join $dir key.pem] -noout -check 2>@1}]
+    lappend r [catch {exec {*}$::openssl verify -CAfile [file join $dir cert.pem] [file join $dir cert.pem] 2>@1}]
+    lappend r [catch {exec {*}$::openssl req -inform DER -in [file join $dir csr.der] -noout -verify 2>@1}]
+    set r
+} -result {0 0 0}
+
+cleanupTests
