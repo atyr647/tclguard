@@ -2,11 +2,11 @@
 
 | File | Platform | Size |
 |---|---|---|
-| `tclguard-linux-x86_64` | Linux x86-64 (glibc 2.39+, X11 for the GUI) | ~5 MB |
-| `tclguard-windows-x86_64.exe` | Windows x86-64, double-click GUI (no console window) | ~6.4 MB |
-| `tclguard-windows-x86_64-console.exe` | The same program flagged as a console app: use this one from Command Prompt / PowerShell so `selftest`, `ctl status`, `check` print their output | ~6.4 MB |
+| `tclguard-linux-x86_64` | Linux x86-64 (glibc 2.39+, X11 for the GUI) | ~11.6 MB |
+| `tclguard-windows-x86_64.exe` | Windows x86-64, double-click GUI (no console window) | ~12.3 MB |
+| `tclguard-windows-x86_64-console.exe` | The same program flagged as a console app: use this one from Command Prompt / PowerShell so `selftest`, `ctl status`, `check` print their output | ~12.3 MB |
 
-Each is **one self-contained file**: Tcl 8.6.14, Tk 8.6.14, tcludp 1.0.11, Metakit and the TclGuard
+Each is **one self-contained file**: Tcl 8.6.14, Tk 8.6.14, tcludp 1.0.11, tcltls 1.7.22 with OpenSSL 3.5.9, Metakit and the TclGuard
 application. No installer, no Tcl installation needed.
 
 ```sh
