@@ -1,6 +1,9 @@
 source [file join [file dirname [info script]] helpers.tcl]
 loadmods util config crypto json tlsproxy httpsclient
 set ::tg::log::stderr 0
+# one line per test, so a hang on a CI machine shows how far it got
+tcltest::configure -verbose {pass error start}
+fconfigure stdout -buffering line
 
 set haveTls [::tg::tls::available]
 set openssl [auto_execok openssl]

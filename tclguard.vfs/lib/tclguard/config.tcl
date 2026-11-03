@@ -512,7 +512,7 @@ proc ::tg::cfg::validate {cfg} {
         if {[dict exists $L tls] && [::tg::bool [dict get $L tls]]} {
             if {$type eq "udp"} { lappend errs "$p: tls is not available for UDP listeners" }
             if {![llength [info commands ::tg::tls::available]] || ![::tg::tls::available]} {
-                lappend warns "$p: this build has no TLS support (tcltls missing); the listener will not start"
+                lappend warns "$p: [expr {[info exists ::tg::tls::why] && $::tg::tls::why ne {} ? $::tg::tls::why : {this build has no TLS support (tcltls missing)}}]; the listener will not start"
             }
             if {[dict get $L tlsMinVersion] ni {1.2 1.3}} { lappend errs "$p: tlsMinVersion must be 1.2 or 1.3" }
             if {[dict get $L tlsCert] ne "" && [dict get $L tlsKey] eq ""} { lappend errs "$p: tlsCert needs tlsKey too" }

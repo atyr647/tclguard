@@ -254,9 +254,13 @@ else:
         check("second client gets its own session and its own replies", d2 == b"echo:two" and len(ue.sources) == 2)
         c.sendto(b"x" * 700, ("127.0.0.1", uport)); time.sleep(0.3)
         check("oversize UDP packet dropped", ue.count == 2, ue.count)
-        time.sleep(3.6)
-        rc, out = g.ctl("status")
-        sessions = re.search(r"UDP sessions\s+(\d+)", out)
+        # sessionTimeout is 3 s and the sweep runs once a second: poll instead of betting on a fixed sleep (slow CI runners)
+        out = ""; sessions = None
+        for _ in range(40):
+            time.sleep(0.5)
+            rc, out = g.ctl("status")
+            sessions = re.search(r"UDP sessions\s+(\d+)", out)
+            if sessions and sessions.group(1) == "0": break
         check("idle UDP sessions are reaped", sessions and sessions.group(1) == "0", out[:300])
         # session cap: 5 source ports from one IP, cap 3
         socks = [udp_client() for _ in range(5)]

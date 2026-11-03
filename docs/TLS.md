@@ -21,6 +21,20 @@ The certificate status is shown on the protection's row and in **Edit → HTTPS*
 
 Edit → HTTPS: turn on HTTPS, leave the automatic option off, and give the paths of your certificate file (the certificate followed by any intermediate certificates, PEM) and private key (PEM). The files are re-read for every new connection, so renewing a certificate (for example with certbot or acme.sh) needs no restart. Expiry is shown and warned about 14 days ahead.
 
+## Which TLS library each platform uses
+| Platform | Where TLS comes from | Verified |
+|---|---|---|
+| Linux single file, Windows single file | built into the program: tcltls 1.7.22 with a static OpenSSL 3.5.9 | the TLS suite (34 to 37 checks) on a real Linux machine and a real Windows runner |
+| Anything run from source (any OS) | the `tls` package of your Tcl (tcltls) and the system OpenSSL | Linux (tcltls 1.7.22 and 2.0.1) |
+| macOS | you install tcltls **2.0.1 or newer** (the Homebrew Tcl has none) | see `releases/README.md` for what the macOS runner showed |
+
+**tcltls 1.7.x crashes (segmentation fault) the first time it wraps a connection on macOS** (Tcl 8.6.18 on Apple silicon, OpenSSL 3.5, found
+with a real macOS runner; a debugger shows a jump to a garbage address inside `tls::import`). TclGuard therefore refuses to use it there: a listener with
+`tls yes` will not start and the log says why, instead of the whole program dying. tcltls 2.0.1 builds from
+`https://core.tcl-lang.org/tcltls/zip/tcltls.zip?uuid=tls-2.0.1` (`./configure --with-tcl=... --with-openssl-dir=... && make install`; see `.github/workflows/ci.yml`, job `macos`).
+tcltls 2.x checks the host name itself, so its message for a wrong name reads "certificate verify failed due to ... mismatch"; TclGuard words it as
+"not valid for that name" either way.
+
 ## What it protects against, specifically
 
 * **No handshake work for bad guys.** Banned, blocklisted and rate-limited addresses are refused *before* any TLS work is done.

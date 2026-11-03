@@ -66,8 +66,16 @@ try:
 
     # ====================================================== successful issuance
     be = HttpBackend(); webport = httpp; secport = free_port()
+    # Pebble dials only the FIRST address "localhost" resolves to. On Windows and macOS that is ::1, so the challenge
+    # listener needs an IPv6 twin there (on Linux it is 127.0.0.1 and a twin would only be redundant).
+    twin = {}
+    try: first = socket.getaddrinfo("localhost", None, type=socket.SOCK_STREAM)[0][0]
+    except OSError: first = None
+    if first == socket.AF_INET6 and have_ipv6():
+        twin = {"web6": {"type": "http", "port": webport, "bind": "::1", "backendPort": be.port, "connRate": 1000, "maxConnsPerIP": 400}}
+        print("INFO localhost resolves to ::1 first: the challenge listener also listens on [::1]")
     g = Guard({"web": {"type": "http", "port": webport, "backendPort": be.port, "challenge": "always", "redirectHttps": 1, "redirectPort": secport,
-                       "connRate": 1000, "maxConnsPerIP": 400},
+                       "connRate": 1000, "maxConnsPerIP": 400}, **twin,
                "secure": {"type": "http", "port": secport, "backendPort": be.port, "tls": 1, "acme": 1, "tlsNames": "localhost",
                           "acmeEmail": "admin@example.com", "acmeDirectory": f"https://localhost:{api}/dir", "acmeCaFile": minica.replace("\\", "/"),
                           "connRate": 1000, "maxConnsPerIP": 400}}, {"strikeThreshold": 50})

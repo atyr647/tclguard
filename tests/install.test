@@ -125,7 +125,7 @@ test inst-unsafe-windows {drive roots, UNC roots, system folders and relative pa
     unset ::env(USERPROFILE) ::env(ProgramFiles) ::env(LOCALAPPDATA)
 } -result {1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 {} {} {} {}}
 
-test inst-refuse-dangerous-dir {install into /, the home folder or a system folder is refused before anything is written} -setup {
+test inst-refuse-dangerous-dir {install into /, the home folder or a system folder is refused before anything is written} -constraints unix -setup {
     set d [sandbox]
 } -body {
     set r {}
@@ -159,7 +159,7 @@ test inst-plan-linux-system-service {system plan with a service names the unit, 
          [string match "*systemctl daemon-reload; systemctl enable tclguard*" $steps] [string match "*starter configuration*tclguard.conf*" $steps]
 } -result {1 1 1 1}
 
-test inst-plan-default-scope {scope follows elevation when not given} -setup {
+test inst-plan-default-scope {scope follows elevation when not given} -constraints unix -setup {
     set d [sandbox]
 } -body {
     set a [lindex [::tg::install::plan {}] 0]
@@ -175,7 +175,7 @@ test inst-plan-needs-root {a system install without root explains why} -constrai
     list [llength $steps] [string match "CANNOT INSTALL: *needs root*sudo*" [lindex $steps 0]] [expr {[::tg::install::planError {scope system}] ne ""}] [::tg::install::planError {scope user}]
 } -result {1 1 1 {}}
 
-test inst-plan-source-refused {running from source (no single-file program) is refused with directions} -setup {
+test inst-plan-source-refused {running from source (no single-file program) is refused with directions} -constraints unix -setup {
     set d [sandbox]
     set ::tg::install::exeOverride ""
     set had [info exists ::starkit::topdir]
@@ -187,7 +187,7 @@ test inst-plan-source-refused {running from source (no single-file program) is r
     if {$had} { set ::starkit::topdir $saved }
 } -result {1 1}
 
-test inst-options-validated {bad options give messages instead of raising} -setup {
+test inst-options-validated {bad options give messages instead of raising} -constraints unix -setup {
     set d [sandbox]
 } -body {
     list [::tg::install::run {bogus 1}] [::tg::install::run {scope everyone}] [::tg::install::run {service maybe}] [::tg::install::run notadict] \
@@ -219,7 +219,7 @@ test inst-linux-desktop-entry {the desktop entry is valid and quotes unusual pat
         [expr {[llength [split $txt \n]] == 9}]
 } -result {{} 1 1 1}
 
-test inst-linux-refuses-injection {a path with a newline cannot reach a desktop entry or unit file} -setup {
+test inst-linux-refuses-injection {a path with a newline cannot reach a desktop entry or unit file} -constraints unix -setup {
     set d [sandbox]
 } -body {
     set r [::tg::install::run [list scope user dir "$d/x\nExec=/bin/sh"]]
@@ -257,7 +257,7 @@ test inst-foreign-file-protected {a file at the target that TclGuard did not ins
          [expr {[readBytes $d/home/.local/bin/tclguard] eq [readBytes $::tg::install::exeOverride]}]
 } -result {1 1 {} 1}
 
-test inst-identical-foreign-ok {a byte-identical file already at the target is adopted without force} -setup {
+test inst-identical-foreign-ok {a byte-identical file already at the target is adopted without force} -constraints unix -setup {
     set d [sandbox]
     file mkdir $d/home/.local/bin
     file copy $::tg::install::exeOverride $d/home/.local/bin/tclguard
@@ -265,7 +265,7 @@ test inst-identical-foreign-ok {a byte-identical file already at the target is a
     list [::tg::install::run {scope user}] [expr {[lsearch -exact [pathsOf $d/home/.local/share/tclguard/install.json] $d/home/.local/bin/tclguard] >= 0}]
 } -result {{} 1}
 
-test inst-plan-identical {the plan says when the installed program is already this one} -setup {
+test inst-plan-identical {the plan says when the installed program is already this one} -constraints unix -setup {
     set d [sandbox]
     ::tg::install::run {scope user}
 } -body {
@@ -275,7 +275,7 @@ test inst-plan-identical {the plan says when the installed program is already th
     list [string match "*already this exact program; nothing to copy" $a] [string match "Replace the installed program*" $b]
 } -result {1 1}
 
-test inst-replace-note {replacing a program says that a running copy keeps the old version} -setup {
+test inst-replace-note {replacing a program says that a running copy keeps the old version} -constraints unix -setup {
     set d [sandbox]
     ::tg::install::run {scope user}
     writeBytes $d/src/tclguard-new "different\n"
@@ -284,7 +284,7 @@ test inst-replace-note {replacing a program says that a running copy keeps the o
     string match "*already running keeps using the old version*" [lindex [::tg::install::notes] 0]
 } -result 1
 
-test inst-install-from-installed {running the installed copy again installs nothing new and does not truncate itself} -setup {
+test inst-install-from-installed {running the installed copy again installs nothing new and does not truncate itself} -constraints unix -setup {
     set d [sandbox]
     ::tg::install::run {scope user}
     set ::tg::install::exeOverride $d/home/.local/bin/tclguard
@@ -293,21 +293,21 @@ test inst-install-from-installed {running the installed copy again installs noth
     list [::tg::install::run {scope user}] [expr {[readBytes $d/home/.local/bin/tclguard] eq $before}] [dict get [::tg::install::status] running]
 } -result {{} 1 1}
 
-test inst-target-is-dir {a folder where the program should go is refused} -setup {
+test inst-target-is-dir {a folder where the program should go is refused} -constraints unix -setup {
     set d [sandbox]
     file mkdir $d/home/.local/bin/tclguard
 } -body {
     list [string match "*is not a regular file*" [::tg::install::run {scope user}]] [file isdirectory $d/home/.local/bin/tclguard]
 } -result {1 1}
 
-test inst-no-menu-entry {startMenu no installs only the program and the record} -setup {
+test inst-no-menu-entry {startMenu no installs only the program and the record} -constraints unix -setup {
     set d [sandbox]
 } -body {
     ::tg::install::run {scope user startMenu no}
     list [file exists $d/home/.local/share/applications] [file exists $d/home/.local/bin/tclguard]
 } -result {0 1}
 
-test inst-user-service-is-autostart {user-scope service starts the INSTALLED copy at sign-in through the autostart entry} -setup {
+test inst-user-service-is-autostart {user-scope service starts the INSTALLED copy at sign-in through the autostart entry} -constraints unix -setup {
     set d [sandbox]
     set ::env(XDG_CONFIG_HOME) $d/home/.config
 } -body {
@@ -319,7 +319,7 @@ test inst-user-service-is-autostart {user-scope service starts the INSTALLED cop
 
 # ====================================================================== Linux system install ====
 
-test inst-linux-system-service {system install with a service: unit, starter config, systemctl commands} -setup {
+test inst-linux-system-service {system install with a service: unit, starter config, systemctl commands} -constraints unix -setup {
     set d [sandbox]
     set ::tg::install::elevatedOverride 1
     set ::tg::install::toolOverride {systemctl 1 nft 1}
@@ -334,7 +334,7 @@ test inst-linux-system-service {system install with a service: unit, starter con
         $::cmds [llength [::tg::install::notes]]
 } -result {{} 1 1 00600 32 0 {{systemctl daemon-reload} {systemctl enable tclguard}} 1}
 
-test inst-unit-matches-packaging {the generated unit has the same directives as packaging/tclguard.service} -body {
+test inst-unit-matches-packaging {the generated unit has the same directives as packaging/tclguard.service} -constraints unix -body {
     set pk {}
     foreach l [split [readBytes [file join $::root packaging tclguard.service]] \n] {
         if {$l ne "" && ![string match #* $l]} { lappend pk $l }
@@ -347,12 +347,12 @@ test inst-unit-matches-packaging {the generated unit has the same directives as 
     expr {$pk eq $gen ? "same" : [list $pk $gen]}
 } -result same
 
-test inst-service-quoting {spaces, quotes, % and $ in the program path are escaped in the unit file} -body {
+test inst-service-quoting {spaces, quotes, % and $ in the program path are escaped in the unit file} -constraints unix -body {
     set u [::tg::install::unitText "/opt/my tg/100%\$x/tclguard" /etc/tclguard /var/lib/tclguard]
     string match "*ExecStart=\"/opt/my tg/100%%\$\$x/tclguard\" --headless --config /etc/tclguard/tclguard.conf*" $u
 } -result 1
 
-test inst-system-keeps-existing-config {an existing configuration is never overwritten and not recorded as ours} -setup {
+test inst-system-keeps-existing-config {an existing configuration is never overwritten and not recorded as ours} -constraints unix -setup {
     set d [sandbox]
     set ::tg::install::elevatedOverride 1
     set ::tg::install::toolOverride {systemctl 0}
@@ -363,7 +363,7 @@ test inst-system-keeps-existing-config {an existing configuration is never overw
         [llength $::cmds] [string match "*systemd was not found*" [lindex [::tg::install::notes] 0]]
 } -result "{} {# mine\ngeneral \{\}\n} 1 0 1"
 
-test inst-system-uninstall-ok {system uninstall result} -setup {
+test inst-system-uninstall-ok {system uninstall result} -constraints unix -setup {
     set d [sandbox]
     set ::tg::install::elevatedOverride 1
     set ::tg::install::toolOverride {systemctl 1 nft 1}
@@ -377,7 +377,7 @@ test inst-system-uninstall-ok {system uninstall result} -setup {
     list $e [rel $d/root [tree $d/root]] $::cmds
 } -result {{} {usr usr/local usr/local/bin usr/local/bin/other-tool usr/share usr/share/applications usr/share/applications/other.desktop} {{systemctl disable --now tclguard} {systemctl daemon-reload} {nft delete table inet tclguard}}}
 
-test inst-uninstall-keep-data {keepData leaves the configuration, otherwise only the known TclGuard files go} -setup {
+test inst-uninstall-keep-data {keepData leaves the configuration, otherwise only the known TclGuard files go} -constraints unix -setup {
     set d [sandbox]
     set ::tg::install::elevatedOverride 1
     set ::tg::install::toolOverride {systemctl 1}
@@ -396,7 +396,7 @@ test inst-uninstall-keep-data {keepData leaves the configuration, otherwise only
     list $e $kept $kept2 $e2 $e3 [rel $d [tree $d/root/etc]] [rel $d [tree $d/root/var]]
 } -result {{} {etc/tclguard etc/tclguard/notes.txt etc/tclguard/tclguard.conf} {var/lib var/lib/tclguard var/lib/tclguard/acme var/lib/tclguard/acme/account.pem var/lib/tclguard/bans.db var/lib/tclguard/precious.txt var/lib/tclguard/tclguard.log.1} {} {} {root/etc/tclguard root/etc/tclguard/notes.txt} {root/var/lib root/var/lib/tclguard root/var/lib/tclguard/precious.txt}}
 
-test inst-purge-refuses-foreign-names {a data folder that is not called tclguard is never emptied} -setup {
+test inst-purge-refuses-foreign-names {a data folder that is not called tclguard is never emptied} -constraints unix -setup {
     set d [sandbox]
     writeBytes $d/mydata/tclguard.conf "x"
 } -body {
@@ -404,7 +404,7 @@ test inst-purge-refuses-foreign-names {a data folder that is not called tclguard
          [string match "*not touching*" [::tg::install::purgeDataDir /]] [string match "*not touching*" [::tg::install::purgeDataDir $::env(HOME)]]
 } -result {1 1 1 1}
 
-test inst-uninstall-user {user uninstall removes exactly the recorded items} -setup {
+test inst-uninstall-user {user uninstall removes exactly the recorded items} -constraints unix -setup {
     set d [sandbox]
     set ::env(XDG_CONFIG_HOME) $d/home/.config
     writeBytes $d/home/.local/bin/mine "keep"
@@ -415,7 +415,7 @@ test inst-uninstall-user {user uninstall removes exactly the recorded items} -se
     list $e [rel $d [tree $d/home]]
 } -result {{} {home/.local home/.local/bin home/.local/bin/mine home/.local/share home/.local/share/applications home/.local/share/applications/mine.desktop}}
 
-test inst-uninstall-removes-only-recorded {a tampered record cannot make uninstall delete unrecorded or dangerous paths} -setup {
+test inst-uninstall-removes-only-recorded {a tampered record cannot make uninstall delete unrecorded or dangerous paths} -constraints unix -setup {
     set d [sandbox]
     ::tg::install::run {scope user}
     writeBytes $d/home/victim.txt "do not delete"
@@ -434,13 +434,13 @@ test inst-uninstall-removes-only-recorded {a tampered record cannot make uninsta
          [file exists $rec] [file exists $d/home/.local/bin/tclguard] [string match "*not removing '/'*" $e] [string match "*it is a folder, not a file*" $e]
 } -result {1 1 1 1 0 1 1}
 
-test inst-uninstall-not-installed {uninstalling something that is not installed says so} -setup {
+test inst-uninstall-not-installed {uninstalling something that is not installed says so} -constraints unix -setup {
     set d [sandbox]
 } -body {
     list [string match "TclGuard is not installed*" [::tg::install::uninstall {scope user}]] [string match "CANNOT UNINSTALL: *" [lindex [::tg::install::uninstallPlan {scope user}] 0]]
 } -result {1 1}
 
-test inst-uninstall-system-needs-root {a system install cannot be removed without root, and the message says how} -setup {
+test inst-uninstall-system-needs-root {a system install cannot be removed without root, and the message says how} -constraints unix -setup {
     set d [sandbox]
     set ::tg::install::elevatedOverride 1
     ::tg::install::run {scope system}
@@ -450,7 +450,7 @@ test inst-uninstall-system-needs-root {a system install cannot be removed withou
     list [string match "*installed system-wide*root*sudo*" $e] [file exists $d/root/usr/local/bin/tclguard]
 } -result {1 1}
 
-test inst-uninstall-damaged-record {a damaged record is reported, nothing is deleted} -setup {
+test inst-uninstall-damaged-record {a damaged record is reported, nothing is deleted} -constraints unix -setup {
     set d [sandbox]
     ::tg::install::run {scope user}
     writeBytes $d/home/.local/share/tclguard/install.json "\{ not json"
@@ -459,7 +459,7 @@ test inst-uninstall-damaged-record {a damaged record is reported, nothing is del
     list [string match "*damaged*" $e] [file exists $d/home/.local/bin/tclguard] [string match "*damaged*" [::tg::install::run {scope user}]]
 } -result {1 1 1}
 
-test inst-uninstall-plan-lists {uninstallPlan mirrors the install and does nothing} -setup {
+test inst-uninstall-plan-lists {uninstallPlan mirrors the install and does nothing} -constraints unix -setup {
     set d [sandbox]
     ::tg::install::run {scope user}
     set before [tree $d/home]
@@ -469,7 +469,7 @@ test inst-uninstall-plan-lists {uninstallPlan mirrors the install and does nothi
          [expr {[lsearch -glob $steps "Delete */tclguard.desktop"] >= 0}] [expr {[lsearch -glob $steps "Delete the install record *"] >= 0}]
 } -result {1 1 1 1}
 
-test inst-partial-failure-recorded {if a step fails, what was done is recorded and uninstall cleans it} -setup {
+test inst-partial-failure-recorded {if a step fails, what was done is recorded and uninstall cleans it} -constraints unix -setup {
     set d [winSandbox]
     set ::tg::install::elevatedOverride 1
     set ::rcFor {{{reg add * /v InstallLocation *} 1 {Access is denied}}}
@@ -640,7 +640,7 @@ test inst-win-task-failure {a failing Scheduled Task is reported, and the progra
 
 # ==================================================================================== macOS ====
 
-test inst-macos-source-refused {macOS from source files has nothing to install} -setup {
+test inst-macos-source-refused {macOS from source files has nothing to install} -constraints unix -setup {
     set d [sandbox macos]
     set ::tg::install::exeOverride ""
     set had [info exists ::starkit::topdir]
@@ -651,7 +651,7 @@ test inst-macos-source-refused {macOS from source files has nothing to install} 
     if {$had} { set ::starkit::topdir $saved }
 } -result 1
 
-test inst-macos-daemon {system install writes a LaunchDaemon with XML-escaped arguments and a starter config} -setup {
+test inst-macos-daemon {system install writes a LaunchDaemon with XML-escaped arguments and a starter config} -constraints unix -setup {
     set d [sandbox macos]
     set ::tg::install::elevatedOverride 1
     set ::tg::install::toolOverride {launchctl 1 pfctl 1}
@@ -668,7 +668,7 @@ test inst-macos-daemon {system install writes a LaunchDaemon with XML-escaped ar
         [file exists $d/root/etc/tclguard/tclguard.conf] $u $r $::cmds [file exists $d/root/Library/LaunchDaemons/com.tclguard.daemon.plist]
 } -result [list {} 0 1 1 1 {} {} {{launchctl bootout system/com.tclguard.daemon} {pfctl -a com.apple/tclguard -F all}} 0] -match glob
 
-test inst-macos-user-launchagent {user-scope service is a LaunchAgent that starts the installed copy} -setup {
+test inst-macos-user-launchagent {user-scope service is a LaunchAgent that starts the installed copy} -constraints unix -setup {
     set d [sandbox macos]
 } -body {
     set e [::tg::install::run {scope user service yes}]
@@ -680,7 +680,7 @@ test inst-macos-user-launchagent {user-scope service is a LaunchAgent that start
 
 # ==================================================================================== status ====
 
-test inst-status {status reports installed, scope, version and running copy; plain text for the CLI} -setup {
+test inst-status {status reports installed, scope, version and running copy; plain text for the CLI} -constraints unix -setup {
     set d [sandbox]
 } -body {
     set a [dict get [::tg::install::status] installed]
@@ -691,7 +691,7 @@ test inst-status {status reports installed, scope, version and running copy; pla
          [expr {[dict get $s binary] eq "$d/home/.local/bin/tclguard"}] [dict get $s running] [string match "*installed (user)*program:*install.json*" [::tg::install::statusText]]
 } -result [list 0 1 1 user 1.0.0 1 0 1]
 
-test inst-status-missing-binary {a record whose program was deleted by hand is shown as MISSING} -setup {
+test inst-status-missing-binary {a record whose program was deleted by hand is shown as MISSING} -constraints unix -setup {
     set d [sandbox]
     ::tg::install::run {scope user}
     file delete $d/home/.local/bin/tclguard
@@ -699,7 +699,7 @@ test inst-status-missing-binary {a record whose program was deleted by hand is s
     string match "*MISSING*" [::tg::install::statusText]
 } -result 1
 
-test inst-record-roundtrip {the record survives odd characters in paths} -setup {
+test inst-record-roundtrip {the record survives odd characters in paths} -constraints unix -setup {
     set d [sandbox]
     set weird "$d/we ird {x} \"q\" \\ \u00e4\u00f6"
 } -body {
@@ -710,7 +710,7 @@ test inst-record-roundtrip {the record survives odd characters in paths} -setup 
     list $e [expr {"$weird/tclguard" in $items}] $e2 [file exists $weird/tclguard] [file exists $weird]
 } -result {{} 1 {} 0 0}
 
-test inst-record-malformed {format and item types of the record are validated} -body {
+test inst-record-malformed {format and item types of the record are validated} -constraints unix -body {
     list [catch {::tg::install::parseManifest {{"schema":2}}}] [catch {::tg::install::parseManifest {{"schema":1,"version":"1","scope":"root","platform":"linux","exe":"/x","items":[]}}}] \
          [catch {::tg::install::parseManifest {{"schema":1,"version":"1","scope":"user","platform":"linux","exe":"/x","items":[{"type":"rm","path":"/"}]}}}] \
          [catch {::tg::install::parseManifest {{"schema":1,"version":"1","scope":"user","platform":"linux","exe":"/x","items":[]}}}]

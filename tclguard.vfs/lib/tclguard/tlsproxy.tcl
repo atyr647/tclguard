@@ -29,7 +29,16 @@ namespace eval ::tg::tls {
     array set chanConn {}
     variable hsCount                  ;# TLS channel -> handshakes started so far
     array set hsCount {}
-    if {![catch {package require tls}]} { set have 1 }
+    variable why ""                   ;# when tcltls is present but refused: the reason
+    if {![catch {package require tls} ver]} {
+        set have 1
+        # tcltls 1.7.x segfaults in tls::import (the first TLS use) on macOS: measured on a real Apple-silicon runner with Tcl 8.6.18 and
+        # OpenSSL 3.5, 2.0.1 works there. A crash cannot be caught, so macOS with 1.7.x is refused up front.
+        if {$::tcl_platform(os) eq "Darwin" && [package vcompare $ver 2.0] < 0} {
+            set have 0
+            set why "tcltls $ver crashes on macOS; install tcltls 2.0.1 or newer (see docs/TLS.md)"
+        }
+    }
 }
 
 proc ::tg::tls::available {} { variable have; return $have }

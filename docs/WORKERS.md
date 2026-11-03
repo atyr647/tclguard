@@ -36,7 +36,7 @@ Three cores give 1.53x, i.e. about half the efficiency per core. The criterion s
 
 ## Verdict: not shipped
 * **Measured benefit is small**: about +50% requests/s for three cores' worth of CPU, on a workload (keep-alive, spread over many addresses) that is close to the best case for sharding. One-shot connections would pay the socket hand-off on the main thread as well.
-* **The ceiling that matters at home is elsewhere**: one core already serves ~6,000 requests/s (see `docs/LOAD.md`), which is more than a home connection can carry, and Tcl 8.6 waits for events with `select()`, so a *process* can never watch more than about 1,000 descriptors (about 450 proxied connections) however many threads it has. Threads share that ceiling; only more processes would lift it.
+* **The ceiling that matters at home is elsewhere**: one core already serves ~6,000 requests/s (see `docs/LOAD.md`), which is more than a home connection carries in real pages (a 20 KB page at 5,000 per second is 800 Mbit/s), and Tcl 8.6 waits for events with `select()`, so a *process* can never watch more than about 1,000 descriptors (about 450 proxied connections) however many threads it has. Threads share that ceiling; only more processes would lift it.
 * **The cost is real**: bans, strikes, trust, rate state, threat level, config reloads, unban/allowlist commands and the control socket would all have to be kept consistent across threads, and every integration suite would need to run in both modes.
 
 If someone needs more than this on one machine, the practical answer today is to run two or more TclGuard instances on different listeners (each has its own cap and its own core) or to put the kernel firewall (nftables) in front, which drops flood traffic without involving Tcl at all.

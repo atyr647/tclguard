@@ -64,7 +64,12 @@ proc ::tg::https::socket {args} {
     if {[catch {::tls::import $ch {*}$opts} err]} { catch {close $ch}; error "TLS setup failed: $err" }
     set deadline [expr {[clock milliseconds] + 15000}]
     while 1 {
-        if {[catch {::tls::handshake $ch} r]} { catch {close $ch}; error "TLS handshake with $host failed: $r" }
+        if {[catch {::tls::handshake $ch} r]} {
+            catch {close $ch}
+            # tcltls 2.x checks the host name itself and says "... due to "IP address mismatch""; 1.7 leaves it to us (below)
+            if {[string match "*mismatch*" $r]} { error "the certificate presented by $host is not valid for that name ($r)" }
+            error "TLS handshake with $host failed: $r"
+        }
         if {$r == 1} break
         set left [expr {$deadline - [clock milliseconds]}]
         if {$left <= 0 || [waitFor $ch readable $left] ne "ready"} { catch {close $ch}; error "TLS handshake with $host timed out" }

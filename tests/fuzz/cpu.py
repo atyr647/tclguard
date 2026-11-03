@@ -13,6 +13,10 @@ import oracle
 
 CPU_LIMIT_MS = 200.0
 NOISE_MS = 25.0
+# The absolute limit is for a fast machine. Slower hardware (a shared CI runner is 3-4x slower) is accounted for by timing a
+# fixed benign workload first (500 pipelined GETs) and scaling the limit by how much slower this machine is than the one
+# the limit was chosen on (min of 5 runs there: 35 ms). The shape checks (super-linear growth) are not affected.
+CAL_REF_MS = 35.0
 
 
 def S(*parts):
@@ -77,9 +81,17 @@ QUICK = ("whitespace-header-value", "trailing-ws-header-value", "trickle-header-
 LINEAR_OK = ("pipeline", "body-cl-single", "chunks-1k")
 
 
+def calibrate(live, runs=5):
+    case = case_of(b"GET /p HTTP/1.1\r\nHost: x\r\n\r\n" * 500, end="half")
+    return max(1.0, min(live.cpu_of(case)[0] for _ in range(runs)) / CAL_REF_MS)
+
+
 def run_probe(live, quick=False, log=print, only=None, families=None):
     findings = []
     live.baseline()
+    slow = calibrate(live)
+    limit = CPU_LIMIT_MS * slow
+    log("  (this machine is %.1fx slower than the reference: CPU limit %.0f ms)" % (slow, limit))
     for name, sizes, build in (families or FAMILIES):
         if only and only not in name:
             continue
@@ -101,9 +113,9 @@ def run_probe(live, quick=False, log=print, only=None, families=None):
         txt = "  ".join("n=%d(%dB): %.0fms" % x for x in row)
         flag = ""
         worst = max(x[2] for x in row)
-        if worst > CPU_LIMIT_MS and not name.startswith(LINEAR_OK):
+        if worst > limit and not name.startswith(LINEAR_OK):
             flag = "HIGH"
-            findings.append(oracle.Finding("cpu", "%s: %.0f ms for a single input (limit %.0f): %s" % (name, worst, CPU_LIMIT_MS, txt), "cpu:" + name,
+            findings.append(oracle.Finding("cpu", "%s: %.0f ms for a single input (limit %.0f): %s" % (name, worst, limit, txt), "cpu:" + name,
                                            case=build(row[[x[2] for x in row].index(worst)][0])))
         if len(row) >= 3 and row[-1][2] > NOISE_MS * 2:
             ratio = row[-1][2] / max(row[-2][2], NOISE_MS / 2)
