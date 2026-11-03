@@ -23,6 +23,7 @@ namespace eval ::tg::cfg {
         hardenDropBogusFlags 1
         removeRulesOnExit   0
         logFile             ""
+        theme               dark
         stateDir            ""
         logLevel            info
         allowlist           {127.0.0.0/8 ::1 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 fe80::/10 fc00::/7}
@@ -388,6 +389,7 @@ proc ::tg::cfg::validate {cfg} {
     if {[dict get $G firewall] ni {auto nft iptables netsh none}} {
         lappend errs "firewall must be one of: auto nft iptables netsh none"
     }
+    if {[dict get $G theme] ni {dark light}} { lappend errs "theme must be dark or light" }
     if {[dict get $G logLevel] ni {debug info warn alert}} { lappend errs "logLevel must be debug, info, warn or alert" }
     set steps [dict get $G banSteps]
     if {[llength $steps] == 0} { lappend errs "banSteps must contain at least one duration (seconds)" }
