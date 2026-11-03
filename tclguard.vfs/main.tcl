@@ -38,6 +38,8 @@ Usage:
   tclguard check [--config FILE]              Validate the configuration
   tclguard init [--preset NAME] [--force]     Create a starter configuration
   tclguard presets                            List game/website presets
+  tclguard autostart on|off|status            Start TclGuard when you sign in
+  tclguard eval <script.tcl> [args]           Run a Tcl script with TclGuard loaded (testing)
   tclguard selftest                           Run a live attack simulation against itself
   tclguard version
 
@@ -242,6 +244,27 @@ proc cmdFw {argv} {
     }
 }
 
+proc cmdAutostart {argv} {
+    switch -- [lindex $argv 0] {
+        on     { set e [::tg::autostart::enable]; if {$e ne ""} { die $e }; puts "TclGuard will start when you sign in" }
+        off    { set e [::tg::autostart::disable]; if {$e ne ""} { die $e }; puts "autostart removed" }
+        status { puts [expr {[::tg::autostart::status] ? "on" : "off"}] }
+        default { die "usage: tclguard autostart on|off|status" }
+    }
+}
+
+# Developer/CI hook: run a script with the application's packages available, e.g. to run the
+# test suite with the exact Tcl and Tk that ship inside the starpack.
+proc cmdEval {argv} {
+    if {![llength $argv]} { die "usage: tclguard eval <script.tcl> [args]" }
+    set script [lindex $argv 0]
+    if {![file exists $script]} { die "no such script: $script" }
+    set ::argv [lrange $argv 1 end]
+    set ::argv0 $script
+    set ::argc [llength $::argv]
+    source $script
+}
+
 proc haveDisplay {} {
     global tcl_platform env
     if {$tcl_platform(platform) eq "windows"} { return 1 }
@@ -298,6 +321,8 @@ switch -glob -- $cmd {
     ctl      { cmdCtl [lrange $argv 1 end] }
     fw       { cmdFw [lrange $argv 1 end] }
     selftest { exit [::tg::selftest::run [lrange $argv 1 end]] }
+    autostart { cmdAutostart [lrange $argv 1 end] }
+    eval     { cmdEval [lrange $argv 1 end] }
     default  { cmdRun $argv }
 }
 

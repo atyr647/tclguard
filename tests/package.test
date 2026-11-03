@@ -2,7 +2,11 @@
 # self-test from inside the mounted payload. (A real starpack uses a tclkit as the
 # runtime; the payload and the zip trailer logic are identical.)
 source [file join [file dirname [info script]] helpers.tcl]
-package require vfs::zip
+if {[catch {package require vfs::zip}] || [catch {package require zipfile::mkzip}]} {
+    puts "package.test: SKIPPED (needs vfs::zip and tcllib zipfile::mkzip)"
+    cleanupTests
+    return
+}
 
 set out [file join [makeDirectory pkg] tg-test.bin]
 

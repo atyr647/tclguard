@@ -1,0 +1,155 @@
+name: ci
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # ------------------------------------------------------------------ Linux ----
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tcl8.6 tk8.6 tcllib tcl-udp tcl-thread tcl-vfs xvfb nftables python3 imagemagick
+      - name: Lint
+        run: python3 tools/lint_vars.py
+      - name: Unit tests
+        run: cd tests && tclsh8.6 all.tcl
+      - name: Self-test (source)
+        run: tclsh8.6 tclguard.vfs/main.tcl selftest
+      - name: GUI smoke test (Xvfb)
+        run: cd tests/gui && xvfb-run -a -s "-screen 0 1300x900x24" wish8.6 smoke.tcl
+      - name: Integration tests (real sockets)
+        run: cd tests/integration && python3 -u test_http.py && python3 -u test_features.py
+      - name: Real-kernel nftables tests
+        run: sudo python3 tests/kernel/run_kernel_tests.py
+      - name: Released starpack
+        run: |
+          chmod +x releases/tclguard-linux-x86_64
+          ( cd releases && sha256sum -c SHA256SUMS --ignore-missing )
+          ./releases/tclguard-linux-x86_64 version
+          ./releases/tclguard-linux-x86_64 selftest
+
+  # ---------------------------------------------------------------- Windows ----
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Facts about this runner
+        run: |
+          [System.Environment]::OSVersion.VersionString
+          "admin: " + ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          python --version
+      - name: Verify release checksums
+        run: |
+          foreach ($line in Get-Content releases\SHA256SUMS) {
+            $hash, $name = $line -split '\s+', 2
+            if ($name -like '*linux*') { continue }
+            $actual = (Get-FileHash ("releases\" + $name.Trim()) -Algorithm SHA256).Hash.ToLower()
+            if ($actual -ne $hash) { throw "checksum mismatch for $name" } else { "ok  $name" }
+          }
+      - name: Starpack - version and self-test (console build)
+        run: |
+          .\releases\tclguard-windows-x86_64-console.exe version
+          .\releases\tclguard-windows-x86_64-console.exe selftest
+      - name: Starpack - unit tests with the Tcl that ships inside it
+        continue-on-error: true
+        run: |
+          $exe = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
+          $failed = 0
+          foreach ($t in 'ip','config','bans','firewall','monitor','autostart') {
+            $out = & $exe eval tests\$t.test 2>&1 | Out-String
+            ($out -split "`n" | Select-String 'Total|FAILED' | Select-Object -Last 3) | ForEach-Object { $_.Line }
+            if ($out -match 'Failed\s+[1-9]') { $failed++ }
+          }
+          if ($failed) { throw "$failed unit test file(s) failed" }
+      - name: Windows platform tests (real netsh, Task Scheduler, netstat)
+        run: .\releases\tclguard-windows-x86_64-console.exe eval tests\platform\windows_test.tcl
+      - name: Integration tests against the starpack (real sockets)
+        run: |
+          $env:TG_CMD = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
+          Push-Location tests\integration
+          python -u test_http.py
+          python -u test_features.py
+          Pop-Location
+      - name: GUI smoke test inside the starpack
+        run: .\releases\tclguard-windows-x86_64-console.exe eval tests\gui\smoke.tcl
+      - name: GUI screenshot (real Windows desktop)
+        continue-on-error: true
+        run: |
+          $env:TCLGUARD_HOME = "$env:RUNNER_TEMP\tgshot"
+          New-Item -ItemType Directory -Force $env:TCLGUARD_HOME | Out-Null
+          $p = Start-Process -FilePath .\releases\tclguard-windows-x86_64.exe -ArgumentList '--gui','--no-firewall' -PassThru
+          Start-Sleep -Seconds 10
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          $g = [System.Drawing.Graphics]::FromImage($bmp)
+          $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("$env:RUNNER_TEMP\windows-gui.png")
+          "GUI process responding: " + (-not $p.HasExited)
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-gui
+          path: ${{ runner.temp }}/windows-gui.png
+          if-no-files-found: ignore
+
+  # ------------------------------------------------------------------ macOS ----
+  macos:
+    runs-on: macos-latest
+    env:
+      TCLSH: /opt/homebrew/opt/tcl-tk@8/bin/tclsh8.6
+      WISH: /opt/homebrew/opt/tcl-tk@8/bin/wish8.6
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tcl/Tk 8.6 (the system one is 8.5)
+        run: |
+          brew install tcl-tk@8
+          $TCLSH <<< 'puts [info patchlevel]'
+      - name: Build the udp extension (tcludp)
+        continue-on-error: true
+        run: |
+          curl -fsSL -o tcludp.tgz "https://downloads.sourceforge.net/project/tcludp/tcludp/1.0.11/tcludp-1.0.11.tar.gz"
+          tar xzf tcludp.tgz && cd tcludp-1.0.11
+          ./configure --with-tcl=/opt/homebrew/opt/tcl-tk@8/lib --prefix=$HOME/tclpkgs
+          make -j4 && make install
+          echo "TCLLIBPATH=$HOME/tclpkgs/lib" >> "$GITHUB_ENV"
+      - name: Which optional packages are present
+        run: |
+          $TCLSH <<< 'foreach p {Tk udp Thread} { puts [format "%-8s %s" $p [expr {[catch {package require $p} v] ? "MISSING" : $v}]] }'
+          if $TCLSH <<< 'package require udp' >/dev/null 2>&1; then echo "HAVE_UDP=1" >> "$GITHUB_ENV"; else echo "TG_NO_UDP=1" >> "$GITHUB_ENV"; fi
+      - name: Unit tests
+        run: cd tests && for t in ip config bans firewall monitor autostart; do $TCLSH $t.test; done 2>&1 | grep -E "Total|FAILED"
+      - name: Self-test (source)
+        run: $TCLSH tclguard.vfs/main.tcl selftest
+      - name: macOS platform tests (real pfctl, LaunchAgent, netstat)
+        run: sudo -E $TCLSH tests/platform/macos_test.tcl
+      - name: Integration tests (real sockets)
+        run: |
+          export TG_CMD="$TCLSH $PWD/tclguard.vfs/main.tcl"
+          cd tests/integration && python3 -u test_http.py && python3 -u test_features.py
+      - name: GUI smoke test (Aqua)
+        continue-on-error: true
+        run: $WISH tests/gui/smoke.tcl
+      - name: GUI screenshot
+        continue-on-error: true
+        run: |
+          export TCLGUARD_HOME="$RUNNER_TEMP/tgshot"; mkdir -p "$TCLGUARD_HOME"
+          $WISH tclguard.vfs/main.tcl --gui --no-firewall &
+          sleep 10
+          screencapture -x "$RUNNER_TEMP/macos-gui.png"
+          kill %1 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-gui
+          path: ${{ runner.temp }}/macos-gui.png
+          if-no-files-found: ignore

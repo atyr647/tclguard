@@ -92,7 +92,7 @@ test val-watcher-badre {} -body {
 } -match glob -result {*not a valid regular expression*}
 test val-bansteps {} -body { errsOf [dict create general {banSteps {60 abc}}] } -match glob -result {*banSteps entry*}
 test val-factors {} -body { errsOf [dict create general {levelFactors {1 2}}] } -match glob -result {*exactly 4*}
-test val-fw {} -body { errsOf [dict create general {firewall pf}] } -match glob -result {*firewall must be*}
+test val-fw {} -body { errsOf [dict create general {firewall ipfw}] } -match glob -result {*firewall must be*}
 test val-public-backend {} -body {
     warnsOf [listener type tcp port 9000 backendHost 8.8.8.8 backendPort 9001]
 } -match glob -result {*public address*}

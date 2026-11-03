@@ -387,8 +387,8 @@ proc ::tg::cfg::validate {cfg} {
     foreach k {hardenSynRate hardenSynBurst hardenConnLimit hardenUdpRate hardenUdpBurst hardenIcmpRate} {
         if {![::tg::isInt [dict get $G $k] 1 100000000]} { lappend errs "$k must be a positive whole number" }
     }
-    if {[dict get $G firewall] ni {auto nft iptables netsh none}} {
-        lappend errs "firewall must be one of: auto nft iptables netsh none"
+    if {[dict get $G firewall] ni {auto nft iptables pf netsh none}} {
+        lappend errs "firewall must be one of: auto nft iptables pf netsh none"
     }
     if {[dict get $G theme] ni {dark light}} { lappend errs "theme must be dark or light" }
     if {[dict get $G logLevel] ni {debug info warn alert}} { lappend errs "logLevel must be debug, info, warn or alert" }

@@ -72,6 +72,21 @@ proc ::tg::mon::parseNetstat {text} {
     return $out
 }
 
+# Parse `netstat -an -p tcp` on macOS/BSD -> same shape. Addresses look like 192.168.1.2.8080
+# (v4) or fe80::1%lo0.8080 (v6): the port is whatever follows the last dot.
+proc ::tg::mon::parseNetstatBsd {text} {
+    set out {}
+    foreach line [split $text \n] {
+        if {![regexp {^tcp[46]?\s+\d+\s+\d+\s+(\S+)\s+(\S+)\s+(\S+)} $line -> la ra state]} continue
+        if {![regexp {^(.*)\.(\d+)$} $la -> lh lport] || ![regexp {^(.*)\.(\d+)$} $ra -> rh rport]} continue
+        set rip [::tg::ip::norm [lindex [split $rh %] 0]]
+        if {$rip eq ""} continue
+        set st [switch -- $state { SYN_RCVD {expr 3} ESTABLISHED {expr 1} default {expr 0} }]
+        lappend out [list $rip $lport [format %02X $st]]
+    }
+    return $out
+}
+
 # rx/tx totals from /proc/net/dev text, skipping loopback (and any given names)
 proc ::tg::mon::parseNetDev {text {only auto}} {
     set rxb 0; set rxp 0; set txb 0; set txp 0
@@ -133,6 +148,9 @@ proc ::tg::mon::readConnections {} {
     }
     if {$tcl_platform(platform) eq "windows"} {
         if {![catch {exec netstat -n -p tcp} txt]} { return [parseNetstat $txt] }
+    }
+    if {$tcl_platform(os) eq "Darwin"} {
+        if {![catch {exec netstat -an -p tcp} txt]} { return [parseNetstatBsd $txt] }
     }
     return {}
 }

@@ -196,6 +196,22 @@ proc ::tg::gui::buildOverview {} {
     variable v
     set p [::tg::kit::scroll .main.body.overview .main.body]
 
+    # ---- "needs administrator" banner (shown only when it applies) ----
+    set bn [::tg::kit::card $p.admin $p -fill warnSoft -border 0]
+    fr $bn.r $bn -bg warnSoft
+    pack $bn.r -fill x -padx 18 -pady 14
+    label $bn.r.i -image [::tg::kit::icon shield 24 warn] -background [::tg::kit::col warnSoft] -borderwidth 0
+    fr $bn.r.t $bn.r -bg warnSoft
+    tx $bn.r.t.h $bn.r.t "The kernel firewall is off" -font bold -bg warnSoft
+    tx $bn.r.t.b $bn.r.t "TclGuard needs administrator rights to hand bans and rate limits to the operating system. Without it, big floods still reach this program." -font small -bg warnSoft -wrap 560
+    pack $bn.r.t.h -anchor w
+    pack $bn.r.t.b -anchor w -pady {2 0}
+    ::tg::kit::button $bn.r.b $bn.r "Restart as administrator" -style primary -icon shieldcheck -command ::tg::gui::restartAdmin
+    pack $bn.r.i -side left -anchor n
+    pack $bn.r.t -side left -padx {14 0}
+    pack $bn.r.b -side right
+    set v(adminBanner) $p.admin
+
     # ---- hero ----
     set hero [::tg::kit::card $p.hero $p -radius 16]
     pack $p.hero -fill x -pady {0 16}
@@ -1052,6 +1068,8 @@ proc ::tg::gui::buildFirewall {} {
         pack $in.$k.v -side right
         set v(fw,$k) $in.$k
     }
+    ::tg::kit::button $in.adm $in "Restart as administrator" -style secondary -icon shieldcheck -command ::tg::gui::restartAdmin
+    set v(fwAdminBtn) $in.adm
     pack [fr $in.pad $in -bg surface] -pady 6
 
     set in2 [::tg::kit::card $sc.opt $sc]
@@ -1199,6 +1217,19 @@ proc ::tg::gui::buildSettings {} {
     pack .main.top.act.settings.rv -side right -padx {0 8}
     settingsVars
     set sc [::tg::kit::scroll .main.body.settings .main.body]
+    # startup + folders: everything a terminal would otherwise be needed for
+    set su [::tg::kit::card $sc.startup $sc]
+    pack $sc.startup -fill x -pady {0 16}
+    tx $su.t $su "Startup" -font h3 -bg surface
+    pack $su.t -anchor w -padx 20 -pady {16 0}
+    set v(autostart) [::tg::autostart::status]
+    formRow $su auto "Start TclGuard when I sign in" "Protection resumes by itself after a reboot. On Windows this creates a scheduled task (elevated when TclGuard has administrator rights)." bool ::tg::gui::v(autostart) -command ::tg::gui::autostartToggled
+    fr $su.b $su -bg surface
+    pack $su.b -fill x -padx 20 -pady {4 18}
+    ::tg::kit::button $su.b.d $su.b "Open data folder" -style secondary -icon server -command [list ::tg::gui::openFolder [::tg::cfg::stateDir]]
+    ::tg::kit::button $su.b.c $su.b "Open settings folder" -style secondary -icon sliders -command [list ::tg::gui::openFolder [file dirname $::tg::cfg::path]]
+    pack $su.b.d -side left
+    pack $su.b.c -side left -padx {8 0}
     set n 0
     foreach grp [settingsSpec] {
         lassign $grp title sub rows
@@ -1261,6 +1292,20 @@ proc ::tg::gui::saveSettings {} {
 
 proc ::tg::gui::buildHelp {} {
     set sc [::tg::kit::scroll .main.body.help .main.body]
+    set tin [::tg::kit::card $sc.test $sc -fill accentSoft -border 0]
+    pack $sc.test -fill x -pady {0 16}
+    fr $tin.r $tin -bg accentSoft
+    pack $tin.r -fill x -padx 20 -pady 16
+    label $tin.r.i -image [::tg::kit::icon shieldcheck 28 accent] -background [::tg::kit::col accentSoft] -borderwidth 0
+    fr $tin.r.t $tin.r -bg accentSoft
+    tx $tin.r.t.h $tin.r.t "Check that it really works" -font h3 -bg accentSoft
+    tx $tin.r.t.b $tin.r.t "Runs a private copy of TclGuard on spare ports and attacks it with floods, broken requests and slow-drip connections. Nothing on your computer or network is changed." -font small -fg muted -bg accentSoft -wrap 600
+    pack $tin.r.t.h -anchor w
+    pack $tin.r.t.b -anchor w -pady {2 0}
+    ::tg::kit::button $tin.r.b $tin.r "Run self-test" -style primary -icon activity -command ::tg::gui::selfTest
+    pack $tin.r.i -side left -anchor n
+    pack $tin.r.t -side left -padx {14 0}
+    pack $tin.r.b -side right
     set in [::tg::kit::card $sc.start $sc]
     pack $sc.start -fill x -pady {0 16}
     tx $in.t $in "Getting started" -font h3 -bg surface
@@ -1352,6 +1397,13 @@ proc ::tg::gui::refresh {} {
     switch -- $page {
         overview {
             drawHero $s
+            set fwst [dict get $s firewall]
+            set needAdmin [expr {![dict get $fwst privileged] && [llength [dict get $fwst available]] > 0 && [::tg::cfg::general firewall] ne "none"}]
+            if {$needAdmin && ![winfo ismapped $v(adminBanner)]} {
+                pack $v(adminBanner) -fill x -pady {0 16} -before .main.body.overview.c.f.hero
+            } elseif {!$needAdmin && [winfo ismapped $v(adminBanner)]} {
+                pack forget $v(adminBanner)
+            }
             set totalConn [expr {[dict get $s connections] + [dict get $s udpSessions]}]
             foreach {id val sub} [list \
                 conns $totalConn "[dict get $s connections] TCP, [dict get $s udpSessions] UDP" \
@@ -1415,7 +1467,98 @@ proc ::tg::gui::refresh {} {
             fwRow inst [dict get $fw installed] [expr {[dict get $fw installed] ? "installed, bans enforced in the kernel" : "not installed"}]
             fwRow harden [dict get $fw hardened] [expr {[dict get $fw hardened] ? "on" : "off"}]
             fwRow drops 2 [::tg::fmtRate [dict get $cnt kernelDrop]]
+            if {![dict get $fw privileged] && [llength [dict get $fw available]] > 0} {
+                if {![winfo ismapped $v(fwAdminBtn)]} { pack $v(fwAdminBtn) -anchor w -padx 20 -pady {8 4} }
+            } else { pack forget $v(fwAdminBtn) }
             fwRow err [expr {[dict get $fw error] eq ""}] [expr {[dict get $fw error] eq "" ? "none" : [dict get $fw error]}]
+        }
+    }
+}
+
+# ---- actions that would otherwise need a terminal ----
+
+proc ::tg::gui::restartAdmin {} {
+    if {![ask "Restart as administrator" "TclGuard will close and reopen with administrator rights so it can control the operating-system firewall.\n\nYour protection pauses for a few seconds. Continue?"]} return
+    # free the listening ports first, so the elevated copy can take them
+    ::tg::engine::stop
+    set err [::tg::autostart::relaunchAsAdmin]
+    if {$err eq ""} {
+        after 800 {set ::tg::quit 1}
+        return
+    }
+    ::tg::engine::start
+    msg warning "TclGuard" $err
+    refresh
+}
+
+proc ::tg::gui::autostartToggled {} {
+    variable v
+    set want $v(autostart)
+    set err [expr {$want ? [::tg::autostart::enable] : [::tg::autostart::disable]}]
+    if {$err ne ""} {
+        msg error "TclGuard" $err
+        set v(autostart) [::tg::autostart::status]
+    }
+}
+
+proc ::tg::gui::openFolder {path} {
+    if {[catch {::tg::autostart::openFolder $path} err]} { msg error "TclGuard" $err }
+}
+
+# Run the built-in attack simulation in a separate process (it starts its own engine, which must
+# not touch the live one) and show its output as it arrives.
+proc ::tg::gui::selfTest {} {
+    variable v
+    set f [::tg::kit::dialog selftest "Self-test"]
+    set t [winfo toplevel $f]
+    tx $f.h $f "Self-test" -font h2 -bg surface
+    pack $f.h -anchor w -padx 24 -pady {22 2}
+    tx $f.s $f "Attacking a private copy of TclGuard. This takes about 30 seconds." -font body -fg muted -bg surface
+    pack $f.s -anchor w -padx 24 -pady {0 12}
+    text $f.tx -width 86 -height 24 -wrap word -background [::tg::kit::col field] -foreground [::tg::kit::col text] -relief flat \
+        -borderwidth 0 -highlightthickness 0 -padx 14 -pady 10 -font $::tg::kit::F(monosm) -state disabled -cursor arrow
+    foreach {tag col} {pass ok fail bad skip warn dim faint} { $f.tx tag configure $tag -foreground [::tg::kit::col $col] }
+    pack $f.tx -padx 24 -fill both -expand 1
+    fr $f.b $f -bg surface
+    pack $f.b -fill x -padx 24 -pady {14 22}
+    tx $f.b.v $f.b "Running..." -font bold -bg surface
+    ::tg::kit::button $f.b.c $f.b "Close" -style primary -command [list destroy $t]
+    pack $f.b.v -side left
+    pack $f.b.c -side right
+    set v(stText) $f.tx; set v(stVerdict) $f.b.v
+    set v(stPass) 0; set v(stFail) 0
+    set cmd [::tg::autostart::selfCommand selftest]
+    if {[catch {open [concat | $cmd [list 2>@1]] r} ch]} {
+        msg error "TclGuard" "Could not start the self-test: $ch"
+        destroy $t
+        return
+    }
+    fconfigure $ch -blocking 0 -buffering line -encoding utf-8
+    fileevent $ch readable [list ::tg::gui::selfTestRead $ch]
+    bind $t <Destroy> [list apply {{ch w} { if {$w eq {.selftest}} { catch {fileevent $ch readable {}}; catch {close $ch} } }} $ch %W]
+    ::tg::kit::modal $t
+}
+
+proc ::tg::gui::selfTestRead {ch} {
+    variable v
+    if {![info exists v(stText)] || ![winfo exists $v(stText)]} { catch {close $ch}; return }
+    set tx $v(stText)
+    while {[gets $ch line] >= 0} {
+        set tag [expr {[string match "*PASS*" $line] ? "pass" : ([string match "*FAIL*" $line] ? "fail" : ([string match "*SKIP*" $line] ? "skip" : ([string match "        *" $line] ? "dim" : "")))}]
+        if {$tag eq "pass"} { incr v(stPass) } elseif {$tag eq "fail"} { incr v(stFail) }
+        $tx configure -state normal
+        $tx insert end "$line\n" $tag
+        $tx see end
+        $tx configure -state disabled
+    }
+    if {[eof $ch]} {
+        catch {close $ch}
+        if {[winfo exists $v(stVerdict)]} {
+            if {$v(stFail) == 0 && $v(stPass) > 0} {
+                $v(stVerdict) configure -text "All $v(stPass) checks passed. The protections work on this computer." -foreground [::tg::kit::col ok]
+            } else {
+                $v(stVerdict) configure -text "$v(stFail) check(s) failed. See the output above." -foreground [::tg::kit::col bad]
+            }
         }
     }
 }

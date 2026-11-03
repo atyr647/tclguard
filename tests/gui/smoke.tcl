@@ -113,6 +113,44 @@ check "remove listener" [expr {[llength [dict keys [::tg::cfg::listeners]]] == 0
 ::tg::gui::showPage protection; pump 100
 check "empty state shown after removing the last listener" [winfo exists .main.body.protection.c.f.list.empty]
 
+# 9b. autostart toggle writes/removes the OS entry (XDG on Linux; isolated HOME)
+set ::env(XDG_CONFIG_HOME) [file join $tmp xdg]
+set ::argv0 [file join $root tclguard.vfs main.tcl]
+::tg::gui::showPage settings; pump 100
+set ::tg::gui::v(autostart) 1; ::tg::gui::autostartToggled
+check "autostart on creates the entry" [::tg::autostart::status]
+set ::tg::gui::v(autostart) 0; ::tg::gui::autostartToggled
+check "autostart off removes it" [expr {![::tg::autostart::status]}]
+
+# 9c. the "needs administrator" banner appears only when it should
+::tg::gui::showPage overview; pump 150
+check "no admin banner while privileged" [expr {![winfo ismapped $::tg::gui::v(adminBanner)]}]
+set savedPriv $::tg::fw::privileged
+set ::tg::fw::privileged 0
+set savedWanted [dict get $::tg::cfg::current general firewall]
+dict set ::tg::cfg::current general firewall auto        ;# the banner is for users who want the firewall
+::tg::gui::refresh; pump 150
+check "admin banner shows when the firewall needs elevation" [winfo ismapped $::tg::gui::v(adminBanner)]
+set ::tg::fw::privileged $savedPriv
+dict set ::tg::cfg::current general firewall $savedWanted
+::tg::gui::refresh; pump 150
+check "banner hides again" [expr {![winfo ismapped $::tg::gui::v(adminBanner)]}]
+
+# 9d. the self-test dialog runs the real attack simulation in a child process and reports a verdict
+after 300 {
+    set ::stDeadline [expr {[clock seconds] + 90}]
+    proc waitSt {} {
+        set vd $::tg::gui::v(stVerdict)
+        if {[winfo exists $vd] && ([string match "All *" [$vd cget -text]] || [string match "*failed*" [$vd cget -text]] || [clock seconds] > $::stDeadline)} {
+            set ::stResult [$vd cget -text]; destroy .selftest; return
+        }
+        after 500 waitSt
+    }
+    waitSt
+}
+::tg::gui::selfTest
+check "self-test dialog reports all checks passed" [string match "All * checks passed*" $::stResult] $::stResult
+
 # 10. no Tcl errors anywhere along the way
 set errs {}
 foreach e [::tg::log::tail 5000 debug] { if {[string match "*background error*" [lindex $e 2]]} { lappend errs [lindex $e 2] } }

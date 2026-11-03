@@ -1,0 +1,94 @@
+source [file join [file dirname [info script]] helpers.tcl]
+loadmods util autostart
+set ::tg::log::stderr 0
+
+# Capture commands instead of running them.
+set ::acmds {}
+set ::arc 0
+proc fakeRun {argv} { lappend ::acmds $argv; list $::arc "" }
+set ::tg::autostart::runner fakeRun
+proc plat {p} { proc ::tg::autostart::platform {} [list return $p] }
+
+test as-linux-roundtrip {XDG autostart entry is written, detected and removed} -setup {
+    set home [makeDirectory ashome]
+    set ::env(XDG_CONFIG_HOME) $home
+    plat linux
+    set ::argv0 /opt/tg/main.tcl
+} -body {
+    set a [::tg::autostart::status]
+    set e [::tg::autostart::enable]
+    set b [::tg::autostart::status]
+    set text [::tg::readFile [::tg::autostart::desktopPath]]
+    set e2 [::tg::autostart::disable]
+    list $a $e $b [string match "*\[Desktop Entry\]*Exec=*--gui*Terminal=false*" $text] $e2 [::tg::autostart::status]
+} -result {0 {} 1 1 {} 0}
+
+test as-linux-quoting {spaces and shell metacharacters in the path are quoted} -body {
+    set e [::tg::autostart::desktopEntry [list "/opt/my app/tclguard" --gui]]
+    string match "*Exec=\"/opt/my app/tclguard\" --gui*" $e
+} -result 1
+
+test as-windows-commands {scheduled task: highest privileges first, plain fallback, quoted path} -setup {
+    plat windows
+    set ::acmds {}
+    set ::arc 0
+    proc ::tg::autostart::selfCommand {args} { list {C:\Program Files\TclGuard\tclguard.exe} {*}$args }
+} -body {
+    ::tg::autostart::enable
+    set c [lindex $::acmds 0]
+    list [lrange $c 0 4] [expr {[string first {"C:\Program Files\TclGuard\tclguard.exe" --gui} [lindex $c 5]] >= 0}] [expr {"/RL" in $c && "HIGHEST" in $c}] [expr {"/SC" in $c && "ONLOGON" in $c}]
+} -result {{schtasks /Create /TN TclGuard /TR} 1 1 1}
+
+test as-windows-fallback {if the elevated task cannot be created, a normal one is} -setup {
+    plat windows
+    set ::acmds {}
+    set ::n 0
+    proc fakeRun2 {argv} { lappend ::acmds $argv; list [expr {"HIGHEST" in $argv && [incr ::n] ? 1 : 0}] "Access is denied" }
+    set ::tg::autostart::runner fakeRun2
+} -body {
+    set e [::tg::autostart::enable]
+    set ::tg::autostart::runner fakeRun
+    list $e [llength $::acmds] [expr {"HIGHEST" in [lindex $::acmds 1]}]
+} -result {{} 2 0}
+
+test as-windows-status-disable {} -setup {plat windows; set ::acmds {}; set ::arc 0} -body {
+    set s [::tg::autostart::status]
+    ::tg::autostart::disable
+    list $s [lindex $::acmds 0] [lindex $::acmds 1]
+} -result {1 {schtasks /Query /TN TclGuard} {schtasks /Delete /TN TclGuard /F}}
+
+test as-macos-plist {LaunchAgent plist is valid XML with RunAtLoad} -setup {
+    plat macos
+    proc ::tg::autostart::selfCommand {args} { list /Applications/TclGuard/tclguard {*}$args }
+} -body {
+    set p [::tg::autostart::plist [::tg::autostart::selfCommand --gui]]
+    list [string match "*<key>Label</key>*com.tclguard.app*" $p] [string match "*<string>/Applications/TclGuard/tclguard</string>*<string>--gui</string>*" $p] [string match "*<key>RunAtLoad</key>*<true/>*" $p]
+} -result {1 1 1}
+
+test as-macos-plist-escape {XML special characters in paths are escaped} -body {
+    string match "*<string>/tmp/a&amp;b&lt;c</string>*" [::tg::autostart::plist {/tmp/a&b<c}]
+} -result 1
+
+test as-admin-windows {elevation goes through PowerShell Start-Process -Verb RunAs} -setup {
+    plat windows; set ::acmds {}; set ::arc 0
+    proc ::tg::autostart::selfCommand {args} { list {C:\Program Files\TG\tclguard.exe} {*}$args }
+} -body {
+    set r [::tg::autostart::relaunchAsAdmin]
+    set c [lindex $::acmds 0]
+    list $r [lindex $c 0] [expr {[string first {Start-Process -FilePath 'C:\Program Files\TG\tclguard.exe'} [lindex $c end]] >= 0 && [string first {-Verb RunAs} [lindex $c end]] > 0}]
+} -result {{} powershell 1}
+
+test as-admin-macos {elevation goes through osascript with administrator privileges} -setup {
+    plat macos; set ::acmds {}; set ::arc 0
+    proc ::tg::autostart::selfCommand {args} { list "/Applications/My App/tclguard" {*}$args }
+} -body {
+    ::tg::autostart::relaunchAsAdmin
+    set c [lindex $::acmds 0]
+    list [lindex $c 0] [string match "*with administrator privileges*" [lindex $c end]] [string match "*'/Applications/My App/tclguard' '--gui'*" [lindex $c end]]
+} -result {osascript 1 1}
+
+test as-admin-linux {on Linux it explains the sudo command instead of guessing} -setup {plat linux} -body {
+    string match "*sudo *" [::tg::autostart::relaunchAsAdmin]
+} -result 1
+
+cleanupTests

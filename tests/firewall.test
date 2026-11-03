@@ -223,4 +223,38 @@ test fw-status {} -setup {setupFw nft {} $L} -body {
     dict get [::tg::fw::status] installed
 } -result 1
 
+# ---- pf (macOS) ----
+test fw-pf-install {anchor under com.apple/*, table + block rule loaded, pf enabled with a token} -setup {setupFw pf {} $L} -body {
+    set ::tg::fw::runner {apply {{argv input} {
+        lappend ::cmds [list $argv $input]
+        if {[lindex $argv 1] eq "-E"} { return [list 0 "pf enabled\nToken : 4242\n"] }
+        list 0 ""
+    }}}
+    ::tg::fw::sync
+    set flat [lmap c $::cmds {lindex $c 0}]
+    set load {}
+    foreach c $::cmds { if {[lrange [lindex $c 0] 1 3] eq "-a com.apple/tclguard -f"} { set load [lindex $c 1] } }
+    list [expr {[lsearch -exact $flat {pfctl -E}] >= 0}] [string match "*table <tclguard_bans> persist*block drop in quick from <tclguard_bans> to any*" $load] $::tg::fw::pfToken $::tg::fw::installed
+} -result {1 1 4242 1}
+
+test fw-pf-ban-unban {bans batched into single pfctl table calls} -setup {setupFw pf {} $L} -body {
+    ::tg::fw::sync
+    set ::cmds {}
+    ::tg::ban::add 1.2.3.4 x 60
+    ::tg::ban::add 2001:db8:1:1::5 x 0 manual
+    ::tg::fw::commit
+    set add [lindex $::cmds 0 0]
+    ::tg::ban::remove 1.2.3.4
+    set ::cmds {}
+    ::tg::fw::commit
+    list $add [lindex $::cmds 0 0]
+} -result {{pfctl -a com.apple/tclguard -t tclguard_bans -T add 1.2.3.4 2001:db8:1:1::/64} {pfctl -a com.apple/tclguard -t tclguard_bans -T delete 1.2.3.4}}
+
+test fw-pf-remove {uninstall flushes the anchor and releases the enable token} -setup {setupFw pf {} $L} -body {
+    set ::tg::fw::pfToken 777
+    ::tg::fw::uninstall
+    set flat [lmap c $::cmds {lindex $c 0}]
+    list [expr {"pfctl -a com.apple/tclguard -F all" in $flat}] [expr {"pfctl -X 777" in $flat}] $::tg::fw::pfToken
+} -result {1 1 {}}
+
 cleanupTests

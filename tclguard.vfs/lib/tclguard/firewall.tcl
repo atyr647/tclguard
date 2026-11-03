@@ -35,6 +35,9 @@ namespace eval ::tg::fw {
     variable netshDirty 0
     variable maxNetsh 900
     variable reinstallAt -100000   ;# last automatic reinstall (ms), rate limiter
+    variable pfAnchor com.apple/tclguard   ;# evaluated by the stock macOS ruleset ("anchor com.apple/*")
+    variable pfTable tclguard_bans
+    variable pfToken ""            ;# reference token from "pfctl -E", released on uninstall
 }
 
 # ----------------------------------------------------------------- exec ------
@@ -91,6 +94,10 @@ proc ::tg::fw::available {} {
     set out {}
     if {$tcl_platform(platform) eq "windows"} {
         if {[which netsh] ne ""} { lappend out netsh }
+        return $out
+    }
+    if {$tcl_platform(os) eq "Darwin"} {
+        if {[which pfctl] ne ""} { lappend out pf }
         return $out
     }
     if {$tcl_platform(os) ne "Linux"} { return {} }
@@ -367,6 +374,56 @@ proc ::tg::fw::ipsOp {op key secs} {
     return [list $ipset del $set $key -exist]
 }
 
+
+# ================================================================ pf (macOS) ===
+# Bans only: pf tables have no per-entry timeout, so TclGuard removes expired entries itself
+# (the ban manager already tracks expiry). Rules live in the anchor com.apple/tclguard, which the
+# stock macOS ruleset already evaluates, so nothing in /etc/pf.conf is modified.
+
+proc ::tg::fw::pfInstall {} {
+    variable pfAnchor
+    variable pfTable
+    variable pfToken
+    variable lastError
+    set pfctl [which pfctl]
+    # enable pf (reference counted: macOS keeps it on until every token is released)
+    lassign [run [list $pfctl -E]] rc out
+    if {[regexp {Token\s*:\s*(\d+)} $out -> tok]} { set pfToken $tok }
+    if {$rc != 0 && ![string match "*already enabled*" $out]} { set lastError "pfctl -E failed: [string trim $out]"; return 0 }
+    set rules "table <$pfTable> persist\nblock drop in quick from <$pfTable> to any\n"
+    lassign [run [list $pfctl -a $pfAnchor -f -] $rules] rc out
+    if {$rc != 0} { set lastError "pfctl anchor load failed: [string trim $out]"; return 0 }
+    lassign [run [list $pfctl -a $pfAnchor -t $pfTable -T flush]] rc out
+    return 1
+}
+
+proc ::tg::fw::pfRemove {} {
+    variable pfAnchor
+    variable pfToken
+    set pfctl [which pfctl]
+    run [list $pfctl -a $pfAnchor -F all]
+    if {$pfToken ne ""} { run [list $pfctl -X $pfToken]; set pfToken "" }
+    return 1
+}
+
+# One pfctl call per distinct operation, with every address as an argument.
+proc ::tg::fw::pfApply {ops} {
+    variable pfAnchor
+    variable pfTable
+    variable lastError
+    set add {}; set del {}
+    foreach op $ops {
+        lassign $op o key secs
+        if {$o eq "ban"} { lappend add $key } else { lappend del $key }
+    }
+    set pfctl [which pfctl]
+    if {[llength $del]} { run [list $pfctl -a $pfAnchor -t $pfTable -T delete {*}$del] }
+    if {[llength $add]} {
+        lassign [run [list $pfctl -a $pfAnchor -t $pfTable -T add {*}$add]] rc out
+        if {$rc != 0} { set lastError "pfctl: [string trim $out]"; ::tg::log::warn "firewall: [string trim $out]" }
+    }
+}
+
 # ============================================================== netsh =========
 
 proc ::tg::fw::netshApply {} {
@@ -411,6 +468,7 @@ proc ::tg::fw::sync {} {
     switch -- $backend {
         nft      { set ok [nftInstall] }
         iptables { set ok [ipsInstall] }
+        pf       { set ok [pfInstall] }
         netsh    { set ok 1 }
     }
     if {!$ok} {
@@ -492,6 +550,7 @@ proc ::tg::fw::commit {} {
     set ops $queue
     set queue {}
     switch -- $backend {
+        pf { pfApply $ops }
         nft {
             set lines {}
             foreach op $ops {
@@ -576,6 +635,7 @@ proc ::tg::fw::uninstall {} {
     switch -- $backend {
         nft      { set ok [nftRemove] }
         iptables { set ok [ipsRemove] }
+        pf       { set ok [pfRemove] }
         netsh    { variable ruleName; run [list [which netsh] advfirewall firewall delete rule name=$ruleName] }
     }
     set installed 0
@@ -620,6 +680,7 @@ proc ::tg::fw::preview {} {
         iptables {
             return "ipset create tclguard hash:net family inet timeout 0\nipset create tclguard6 hash:net family inet6 timeout 0\niptables -t raw -I PREROUTING -m set --match-set tclguard src -j DROP\nip6tables -t raw -I PREROUTING -m set --match-set tclguard6 src -j DROP\n# bans: ipset add tclguard <ip> timeout <sec>"
         }
+        pf { return "pfctl -E\npfctl -a com.apple/tclguard -f -        # table <tclguard_bans> persist; block drop in quick from <tclguard_bans> to any\n# bans: pfctl -a com.apple/tclguard -t tclguard_bans -T add <address>" }
         netsh { return "netsh advfirewall firewall add rule name=\"TclGuard Bans\" dir=in action=block remoteip=<banned addresses>" }
     }
     return "(no kernel firewall backend active)"

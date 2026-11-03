@@ -3,6 +3,13 @@ import os, socket, subprocess, sys, threading, time, tempfile, shutil, json, re,
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 MAIN = os.path.join(ROOT, "tclguard.vfs", "main.tcl")
+# How to start TclGuard. Default: tclsh8.6 on the source tree. CI sets TG_CMD to a starpack
+# (e.g. TG_CMD="releases/tclguard-linux-x86_64") or to a different interpreter
+# (TG_CMD="/opt/homebrew/opt/tcl-tk/bin/tclsh8.6 tclguard.vfs/main.tcl").
+import shlex
+TG = shlex.split(os.environ["TG_CMD"], posix=(os.name != "nt")) if os.environ.get("TG_CMD") else ["tclsh8.6", MAIN]
+NO_UDP = bool(os.environ.get("TG_NO_UDP"))
+def fwd(p): return p.replace("\\", "/")
 results = []
 
 def check(name, cond, detail=""):
@@ -149,7 +156,7 @@ class Guard:
         self.ctlport = free_port()
         self.token = "t" * 32
         g = {"firewall": "none", "allowlist": "{}", "controlPort": self.ctlport, "controlToken": self.token,
-             "stateDir": self.dir, "logLevel": "debug", "learnTrusted": 1}
+             "stateDir": fwd(self.dir), "logLevel": "debug", "learnTrusted": 1}
         g.update(general or {})
         text = "general {\n" + "".join(f"  {k} {v}\n" for k, v in g.items()) + "}\nlisteners {\n"
         for name, spec in listeners.items():
@@ -160,14 +167,14 @@ class Guard:
         self.log = []
     def start(self):
         self.logf = open(os.path.join(self.dir, "stderr.log"), "a")
-        self.proc = subprocess.Popen(["tclsh8.6", MAIN, "--config", self.conf, "--headless"], stdout=self.logf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+        self.proc = subprocess.Popen([*TG, "--config", self.conf, "--headless", "--no-firewall"], stdout=self.logf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
         if not wait_port(self.ctlport, 10): raise RuntimeError("TclGuard did not start:\n" + self.stderr())
         return self
     def stderr(self):
         try: return open(os.path.join(self.dir, "stderr.log")).read()
         except Exception: return ""
     def ctl(self, *args):
-        r = subprocess.run(["tclsh8.6", MAIN, "ctl", "--config", self.conf, *map(str, args)], capture_output=True, text=True, timeout=20)
+        r = subprocess.run([*TG, "ctl", "--config", self.conf, *map(str, args)], capture_output=True, text=True, timeout=30)
         return r.returncode, (r.stdout + r.stderr)
     def stop(self):
         if self.proc and self.proc.poll() is None:

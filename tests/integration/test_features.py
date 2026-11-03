@@ -84,11 +84,11 @@ try:
     rc, out = g.ctl("ban", "not-an-ip"); check("ctl rejects invalid address", rc != 0, out)
     rc, out = g.ctl("nonsense"); check("ctl rejects unknown command", rc != 0 and "unknown command" in out, out)
     # bad token
-    r = subprocess.run(["tclsh8.6", MAIN, "ctl", "--config", g.conf, "status"], capture_output=True, text=True, env={**os.environ})
+    r = subprocess.run([*TG, "ctl", "--config", g.conf, "status"], capture_output=True, text=True, env={**os.environ})
     check("ctl works with the right token", r.returncode == 0)
     bad = open(g.conf).read().replace(g.token, "x" * 32)
     open(g.conf + ".bad", "w").write(bad)
-    r = subprocess.run(["tclsh8.6", MAIN, "ctl", "--config", g.conf + ".bad", "status"], capture_output=True, text=True)
+    r = subprocess.run([*TG, "ctl", "--config", g.conf + ".bad", "status"], capture_output=True, text=True)
     check("ctl with wrong token is refused", r.returncode != 0 and "authentication failed" in r.stderr, r.stderr)
     rc, out = g.ctl("status"); check("status shows summary and listeners", "Threat level" in out and "Listeners:" in out and "web" in out, out[:300])
 
@@ -234,54 +234,58 @@ finally:
     g.stop(); rec.stop(); g.cleanup()
 
 # ===================================================================== UDP
-ue = UdpEcho(); uport = free_port()
-g = Guard({"bed": {"type": "udp", "port": uport, "backendPort": ue.port, "pps": 50, "maxSessionsPerIP": 3, "sessionTimeout": 3,
-                   "maxPacket": 600, "bytesPerSec": 100000, "replyBytesPerSec": 100000}},
-          {"strikeThreshold": 12, "strikeLeakPerSec": 0, "banSteps": "{4 20}"})
-try:
-    g.start(); time.sleep(0.5)
-    def udp_client():
-        c = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); c.settimeout(2); return c
-    c = udp_client(); c.sendto(b"ping1", ("127.0.0.1", uport))
-    try: d, _ = c.recvfrom(100)
-    except socket.timeout: d = b""
-    check("UDP relay round trip", d == b"echo:ping1", d)
-    check("backend sees a stable per-client source (not the player)", len(ue.sources) == 1)
-    c2 = udp_client(); c2.sendto(b"two", ("127.0.0.1", uport)); d2, _ = c2.recvfrom(100)
-    check("second client gets its own session and its own replies", d2 == b"echo:two" and len(ue.sources) == 2)
-    c.sendto(b"x" * 700, ("127.0.0.1", uport)); time.sleep(0.3)
-    check("oversize UDP packet dropped", ue.count == 2, ue.count)
-    time.sleep(3.6)
-    rc, out = g.ctl("status")
-    sessions = re.search(r"UDP sessions\s+(\d+)", out)
-    check("idle UDP sessions are reaped", sessions and sessions.group(1) == "0", out[:300])
-    # session cap: 5 source ports from one IP, cap 3
-    socks = [udp_client() for _ in range(5)]
-    for i, k in enumerate(socks): k.sendto(b"s%d" % i, ("127.0.0.1", uport)); time.sleep(0.05)
-    answered = 0
-    for k in socks:
-        k.settimeout(0.6)
-        try: k.recvfrom(100); answered += 1
-        except socket.timeout: pass
-    check("UDP per-IP session cap (3 of 5)", answered == 3, answered)
-    # packet flood -> dropped, then banned
-    n0 = ue.count
-    f = udp_client()
-    for i in range(3000): f.sendto(b"flood%d" % i, ("127.0.0.1", uport))
-    time.sleep(0.8)
-    reached = ue.count - n0
-    check("UDP flood: only a fraction reaches the game server", reached < 400, reached)
-    rc, out = g.ctl("bans")
-    check("UDP flood source banned", "127.0.0.1" in out, out[:200])
-    c3 = udp_client(); c3.sendto(b"after", ("127.0.0.1", uport))
-    try: d, _ = c3.recvfrom(100)
-    except socket.timeout: d = b""
-    check("banned UDP source gets nothing", d == b"")
-finally:
-    g.stop(); ue.stop()
-    errs = [l for l in g.stderr().splitlines() if "background error" in l]
-    check("no background errors in UDP guard log", not errs, errs[:3])
-    g.cleanup()
+if NO_UDP:
+    print('SKIP UDP tests (TG_NO_UDP set: this Tcl has no udp extension)')
+else:
+    ue = UdpEcho(); uport = free_port()
+    g = Guard({"bed": {"type": "udp", "port": uport, "backendPort": ue.port, "pps": 50, "maxSessionsPerIP": 3, "sessionTimeout": 3,
+                       "maxPacket": 600, "bytesPerSec": 100000, "replyBytesPerSec": 100000}},
+              {"strikeThreshold": 12, "strikeLeakPerSec": 0, "banSteps": "{4 20}"})
+    try:
+        g.start(); time.sleep(0.5)
+        def udp_client():
+            c = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); c.settimeout(2); return c
+        c = udp_client(); c.sendto(b"ping1", ("127.0.0.1", uport))
+        try: d, _ = c.recvfrom(100)
+        except socket.timeout: d = b""
+        check("UDP relay round trip", d == b"echo:ping1", d)
+        check("backend sees a stable per-client source (not the player)", len(ue.sources) == 1)
+        c2 = udp_client(); c2.sendto(b"two", ("127.0.0.1", uport)); d2, _ = c2.recvfrom(100)
+        check("second client gets its own session and its own replies", d2 == b"echo:two" and len(ue.sources) == 2)
+        c.sendto(b"x" * 700, ("127.0.0.1", uport)); time.sleep(0.3)
+        check("oversize UDP packet dropped", ue.count == 2, ue.count)
+        time.sleep(3.6)
+        rc, out = g.ctl("status")
+        sessions = re.search(r"UDP sessions\s+(\d+)", out)
+        check("idle UDP sessions are reaped", sessions and sessions.group(1) == "0", out[:300])
+        # session cap: 5 source ports from one IP, cap 3
+        socks = [udp_client() for _ in range(5)]
+        for i, k in enumerate(socks): k.sendto(b"s%d" % i, ("127.0.0.1", uport)); time.sleep(0.05)
+        answered = 0
+        for k in socks:
+            k.settimeout(0.6)
+            try: k.recvfrom(100); answered += 1
+            except socket.timeout: pass
+        check("UDP per-IP session cap (3 of 5)", answered == 3, answered)
+        # packet flood -> dropped, then banned
+        n0 = ue.count
+        f = udp_client()
+        for i in range(3000): f.sendto(b"flood%d" % i, ("127.0.0.1", uport))
+        time.sleep(0.8)
+        reached = ue.count - n0
+        check("UDP flood: only a fraction reaches the game server", reached < 400, reached)
+        rc, out = g.ctl("bans")
+        check("UDP flood source banned", "127.0.0.1" in out, out[:200])
+        c3 = udp_client(); c3.sendto(b"after", ("127.0.0.1", uport))
+        try: d, _ = c3.recvfrom(100)
+        except socket.timeout: d = b""
+        check("banned UDP source gets nothing", d == b"")
+    finally:
+        g.stop(); ue.stop()
+        errs = [l for l in g.stderr().splitlines() if "background error" in l]
+        check("no background errors in UDP guard log", not errs, errs[:3])
+        g.cleanup()
+
 
 # ============================================================== lockdown
 echo = TcpEcho(); lport = free_port()
