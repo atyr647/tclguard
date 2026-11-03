@@ -174,7 +174,7 @@ class Guard:
         self.log = []
     def start(self):
         self.logf = open(os.path.join(self.dir, "stderr.log"), "a")
-        self.proc = subprocess.Popen([*TG, "--config", self.conf, "--headless", "--no-firewall"], stdout=self.logf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+        self.proc = subprocess.Popen([*TG, "--config", self.conf, "--headless", *([] if os.environ.get("TG_FIREWALL") else ["--no-firewall"])], stdout=self.logf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
         if not wait_port(self.ctlport, 10):
             raise RuntimeError(f"TclGuard did not start (exit status: {self.proc.poll()}):\n" + self.stderr())
         return self

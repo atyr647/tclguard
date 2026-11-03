@@ -84,6 +84,7 @@ proc ::tg::engine::stop {} {
     ::tg::ban::save
     ::tg::trust::save
     ::tg::fw::shutdown
+    ::tg::cfg::handBack 1
     set running 0
     ::tg::log::info "TclGuard stopped"
 }
@@ -142,6 +143,7 @@ proc ::tg::engine::event {type text} {
 # ----------------------------------------------------------------- tick ----
 
 proc ::tg::engine::tick {t} {
+    ::tg::cfg::handBack
     ::tg::stat::sample $t
     ::tg::mon::tick $t
     set sig [::tg::mon::signals]

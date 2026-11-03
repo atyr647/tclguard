@@ -1,0 +1,28 @@
+source [file join [file dirname [info script]] helpers.tcl]
+loadmods util config
+set ::tg::log::stderr 0
+# only meaningful as root on Unix (that is the situation it exists for); CI runs this file once under sudo
+testConstraint rootunix [expr {$::tcl_platform(platform) eq "unix" && ![catch {exec id -u} u] && $u == 0}]
+
+test handback-gives-root-files-back {files root wrote in someone else's folder are handed back; root-owned folders are left alone} -constraints rootunix -setup {
+    set d [makeDirectory hbtest]
+    file mkdir $d/state/certs
+    foreach f {tclguard.conf state/bans.db state/certs/a.pem} { set fh [open $d/$f w]; puts $fh x; close $fh }
+    file attributes $d -owner 4242 -group 4343          ;# "the person's" folder
+    set ::tg::cfg::path $d/tclguard.conf
+    set ::tg::cfg::current [dict create general {stateDir {}}]
+} -body {
+    set n [::tg::cfg::handBack 1]
+    set r {}
+    foreach f {tclguard.conf state state/bans.db state/certs state/certs/a.pem} {
+        file stat $d/$f st; lappend r "$st(uid):$st(gid)"
+    }
+    # a root-owned folder (system install): nothing changes
+    file attributes $d -owner 0 -group 0
+    file attributes $d/state/bans.db -owner 0 -group 0
+    set n2 [::tg::cfg::handBack 1]
+    file stat $d/state/bans.db st
+    list $n $r $n2 $st(uid)
+} -cleanup {file delete -force $d} -result {5 {4242:4343 4242:4343 4242:4343 4242:4343 4242:4343} {} 0}
+
+cleanupTests

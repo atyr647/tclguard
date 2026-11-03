@@ -21,6 +21,9 @@ jobs:
       - name: Unit tests
         if: ${{ !cancelled() }}
         run: cd tests && tclsh8.6 all.tcl
+      - name: Unit test that needs root (files written by root are handed back to the folder's owner)
+        if: ${{ !cancelled() }}
+        run: cd tests && sudo -E tclsh8.6 handback.test | grep -E 'Total|FAILED'
       - name: Self-test (source)
         if: ${{ !cancelled() }}
         run: tclsh8.6 tclguard.vfs/main.tcl selftest
@@ -127,7 +130,7 @@ jobs:
         run: |
           $exe = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
           $failed = @()
-          foreach ($phase in 'facts','netstat','autostart','locations','firewall','firewallscale') {
+          foreach ($phase in 'facts','netstat','autostart','locations','firewall','firewallscale','elevation') {
             Write-Host "##[group]platform phase: $phase"
             pwsh -NoProfile -File tools\ci-bounded.ps1 -Exe $exe -Seconds 180 eval tests\platform\windows_test.tcl $phase
             if ($LASTEXITCODE -ne 0) { $failed += "$phase (exit $LASTEXITCODE)" }
@@ -277,6 +280,9 @@ jobs:
       - name: macOS platform tests (real pfctl, LaunchAgent, netstat)
         if: ${{ !cancelled() }}
         run: sudo -E $TCLSH tests/platform/macos_test.tcl
+      - name: macOS elevation (the AppleScript, the root path and the cancel wording)
+        if: ${{ !cancelled() }}
+        run: $TCLSH tests/platform/macos_elevation_test.tcl
       - name: macOS installer tests (plist lint, launchctl, stand-in program; no starpack exists)
         if: ${{ !cancelled() }}
         run: sudo -E $TCLSH tests/platform/macos_install_test.tcl

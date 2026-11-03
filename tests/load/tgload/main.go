@@ -11,6 +11,7 @@
 //	tgload garbage   -addr ... -workers 100 -dur 30s -srcbase 127.0.5.0 -srcn 100
 //	tgload tlsflood  -addr ... -workers 100 -dur 30s -srcbase 127.0.6.0 -srcn 100 [-halfopen]
 //	tgload udpflood  -addr ... -pps 50000 -dur 30s -srcbase 127.0.7.0 -srcn 20 -size 64
+//	tgload synflood  -addr ... -pps 50000 -dur 30s -srcbase 10.77.128.0 -srcn 20000   (Linux, root, SPOOFED sources)
 //
 // Each client command prints one JSON object with the totals when it finishes.
 package main
@@ -87,7 +88,7 @@ func pct(l []float64, p float64) float64 {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: tgload <backend|http|reqflood|connflood|slowloris|garbage|tlsflood|udpflood> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: tgload <backend|http|reqflood|connflood|slowloris|garbage|tlsflood|udpflood|synflood> [flags]")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -123,6 +124,8 @@ func main() {
 		runTLSFlood(*addr, *workers, *dur, *srcbase, *srcn, *halfopen)
 	case "udpflood":
 		runUDPFlood(*addr, *pps, *dur, *srcbase, *srcn, *size)
+	case "synflood":
+		runSynFlood(*addr, *pps, *dur, *srcbase, *srcn)
 	default:
 		fmt.Fprintln(os.Stderr, "unknown command", cmd)
 		os.Exit(2)

@@ -134,24 +134,67 @@ proc ::tg::autostart::disable {} {
     return ""
 }
 
+# ---- elevation (UAC on Windows, the password dialog on macOS) --------------------------------------
+
+namespace eval ::tg::autostart {
+    # Test hook: the words that make AppleScript ask for the password. Tests blank it to run the very same script as the
+    # current user, which checks the quoting and the launch without a dialog nobody could answer.
+    variable macPrivilege "with administrator privileges"
+}
+
+# The command line of the elevated copy. It always carries --config: the elevated process can belong to ANOTHER account
+# (UAC asks a standard user for an administrator's credentials; macOS runs it as root) whose home folder is different,
+# and it would otherwise start with an empty configuration instead of the one the person was just looking at.
+proc ::tg::autostart::elevationCommand {} {
+    set cmd [selfCommand --gui]
+    if {[info exists ::tg::cfg::path] && $::tg::cfg::path ne ""} { lappend cmd --config [file normalize $::tg::cfg::path] }
+    return $cmd
+}
+
+# One shell line that starts the program detached (macOS, run by `do shell script`).
+proc ::tg::autostart::macShellLine {cmd} {
+    set words [lmap a $cmd {string cat ' [string map {' '\\''} $a] '}]
+    return "[join $words { }] >/dev/null 2>&1 &"
+}
+
+# AppleScript string literal: only backslash and double quote are special inside it.
+proc ::tg::autostart::asQuote {s} {
+    string cat \" [string map [list \\ \\\\ \" \\\"] $s] \"
+}
+
+proc ::tg::autostart::macScript {cmd} {
+    variable macPrivilege
+    set prompt "TclGuard needs administrator rights to control the operating-system firewall."
+    string trim "do shell script [asQuote [macShellLine $cmd]] with prompt [asQuote $prompt] $macPrivilege"
+}
+
+# Did the person say no? (Windows: "The operation was canceled by the user"; macOS: AppleScript error -128, "User canceled")
+proc ::tg::autostart::declined {text} {
+    regexp -nocase {cancel+ed by the user|user cancel+ed|\(-128\)|-128\y} $text
+}
+
 # Restart with administrator rights. Returns "" if the elevated copy was launched
 # (the caller should then quit), otherwise a message to show the user.
 proc ::tg::autostart::relaunchAsAdmin {} {
-    set cmd [selfCommand --gui]
+    set cmd [elevationCommand]
     switch -- [platform] {
         windows {
             set exe [lindex $cmd 0]
             set rest [lrange $cmd 1 end]
             set ps "Start-Process -FilePath '[string map {' ''} $exe]' -ArgumentList '[string map {' ''} [join [lmap a $rest {quoteWin $a}] { }]]' -Verb RunAs"
             lassign [run [list powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command $ps]] rc out
-            if {$rc != 0} { return "Windows did not start the elevated copy: [string trim $out]" }
+            if {$rc != 0} {
+                if {[declined $out]} { return "Windows did not get your permission, so TclGuard keeps running without administrator rights." }
+                return "Windows did not start the elevated copy: [string trim $out]"
+            }
             return ""
         }
         macos {
-            set sh [join [lmap a $cmd {string cat ' [string map {' '\\''} $a] '}] " "]
-            set osa "do shell script \"$sh >/dev/null 2>&1 &\" with administrator privileges"
-            lassign [run [list osascript -e $osa]] rc out
-            if {$rc != 0} { return "macOS did not start the elevated copy: [string trim $out]" }
+            lassign [run [list osascript -e [macScript $cmd]]] rc out
+            if {$rc != 0} {
+                if {[declined $out]} { return "macOS did not get your permission, so TclGuard keeps running without administrator rights." }
+                return "macOS did not start the elevated copy: [string trim $out]"
+            }
             return ""
         }
         default {

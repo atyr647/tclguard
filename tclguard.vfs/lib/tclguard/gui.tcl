@@ -1607,12 +1607,30 @@ proc ::tg::gui::restartAdmin {} {
     ::tg::engine::stop
     set err [::tg::autostart::relaunchAsAdmin]
     if {$err eq ""} {
-        after 800 {set ::tg::quit 1}
+        # The elevated copy is launched, but is it up? Quit only once its control port answers; if it never does (it crashed, the
+        # antivirus stopped it) take the ports back, so the person is not left with no protection and no window.
+        elevWait 0
         return
     }
     ::tg::engine::start
     msg warning "TclGuard" $err
     refresh
+}
+
+proc ::tg::gui::elevWait {n} {
+    set port [::tg::cfg::general controlPort]
+    if {![catch {socket 127.0.0.1 $port} s]} {
+        catch {close $s}
+        after 300 {set ::tg::quit 1}
+        return
+    }
+    if {$n >= 60} {
+        ::tg::engine::start
+        msg warning "TclGuard" "The administrator copy of TclGuard did not start within 30 seconds, so this one keeps running without administrator rights.\n\nIf Windows or macOS showed a message, or your antivirus blocked it, allow it and try again."
+        refresh
+        return
+    }
+    after 500 [list ::tg::gui::elevWait [incr n]]
 }
 
 proc ::tg::gui::autostartToggled {} {

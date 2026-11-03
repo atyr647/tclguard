@@ -735,3 +735,32 @@ proc ::tg::randomHex {nBytes} {
     for {set i 0} {$i < $nBytes} {incr i} { append hex [format %02x [expr {int(rand() * 256)}]] }
     return $hex
 }
+
+# Files written by a process running as root inside a folder that belongs to someone else (the macOS "Restart as administrator"
+# runs the whole program as root, `sudo tclguard` does the same on Linux) would become unreadable to that person: the token in
+# the configuration file, bans.db, the certificates. Give such files back to the folder's owner. No-op on Windows, for
+# non-root processes and for root-owned folders (system installs).
+variable ::tg::cfg::handBackAt 0
+proc ::tg::cfg::handBack {{force 0}} {
+    variable path
+    variable handBackAt
+    global tcl_platform
+    if {$tcl_platform(platform) eq "windows" || $path eq ""} return
+    set now [clock seconds]
+    if {!$force && $now - $handBackAt < 30} return
+    set handBackAt $now
+    if {[catch {exec id -u} uid] || $uid != 0} return
+    set dir [file dirname [file normalize $path]]
+    if {[catch {file stat $dir st}] || $st(uid) == 0} return
+    set owner $st(uid); set group $st(gid)
+    set n 0
+    set walk {}
+    lappend walk [file normalize $path] [stateDir]
+    while {[llength $walk]} {
+        set f [lindex $walk 0]; set walk [lrange $walk 1 end]
+        if {[catch {file lstat $f fs}] || $fs(type) eq "link"} continue
+        if {$fs(uid) == 0} { if {![catch {file attributes $f -owner $owner -group $group}]} { incr n } }
+        if {$fs(type) eq "directory"} { foreach c [glob -nocomplain -directory $f -- * .*] { if {[file tail $c] ni {. ..}} { lappend walk $c } } }
+    }
+    return $n
+}

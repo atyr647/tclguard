@@ -1,7 +1,7 @@
 # usage: windows_test.tcl ?phase ...?   (no phases = all). Phases: facts netstat firewall firewallscale autostart locations
 puts "windows_test: starting"; flush stdout
 source [file join [file dirname [info script]] common.tcl]
-set ::phases [expr {[info exists ::argv] && [llength $::argv] ? $::argv : {facts netstat firewall firewallscale autostart locations}}]
+set ::phases [expr {[info exists ::argv] && [llength $::argv] ? $::argv : {facts netstat firewall firewallscale autostart locations elevation}}]
 proc want {p} { expr {$p in $::phases} }
 puts "Windows platform tests: Tcl [info patchlevel] on $tcl_platform(os) $tcl_platform(osVersion), [info nameofexecutable]"
 
@@ -122,5 +122,31 @@ phase "locations"
 set h [::tg::cfg::homeDir]
 check "config folder is under %APPDATA% ($h)" [expr {[string match -nocase "*TclGuard" $h]}]
 check "file attributes -permissions does not break saving" [expr {![catch {::tg::cfg::save [file join $::env(TEMP) tg-perm.conf] [::tg::cfg::new]}]}]
+}
+if {[want elevation]} {
+phase "elevation: the real 'Restart as administrator' path (Start-Process -Verb RunAs)"
+# The runner's account is an administrator with UAC off, so no consent dialog appears; what is verified is everything else: that
+# the command is accepted by Windows, the elevated copy really starts elevated, and it receives the configuration path intact
+# (spaces, an apostrophe and a non-ASCII letter included). The consent dialog itself belongs to Windows.
+set tmp [expr {[info exists ::env(RUNNER_TEMP)] ? $::env(RUNNER_TEMP) : $::env(TEMP)}]
+set marker [file join $tmp tg-elevated.txt]
+file delete -force $marker
+set cfgdir [file join $tmp "tg elev it's d\u00e9j\u00e0"]
+file mkdir $cfgdir
+set cfg [file join $cfgdir "my config.conf"]
+set ::tg::cfg::path $cfg
+set ::elevExe [info nameofexecutable]
+set ::elevScript [file join $::root tests platform elev_marker.tcl]
+set ::elevMarker $marker
+proc ::tg::autostart::selfCommand {args} { return [list $::elevExe eval $::elevScript $::elevMarker {*}$args] }
+set err [::tg::autostart::relaunchAsAdmin]
+check "Windows accepted the elevation request" [expr {$err eq ""}] $err
+set got ""
+for {set i 0} {$i < 120 && $got eq ""} {incr i} { after 500; if {[file exists $marker]} { set fh [open $marker r]; fconfigure $fh -encoding utf-8; set got [string trim [read $fh]]; close $fh } }
+check "the elevated copy started within a minute" [expr {$got ne ""}] "no marker file"
+if {$got ne ""} {
+    check "...and it is really elevated" [expr {[dict get $got privileged] == 1}] $got
+    check "...and it got --gui and the configuration path exactly (spaces, apostrophe, accents)" [expr {[dict get $got argv] eq [list --gui --config [file normalize $cfg]]}] $got
+}
 }
 finish

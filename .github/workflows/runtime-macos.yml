@@ -33,6 +33,14 @@ jobs:
           export WORK="$RUNNER_TEMP/kcwork"
           tools/build-tclkit.sh macos 2>&1 | tee "$RUNNER_TEMP/build.log" | tail -n 60
           test -x "$WORK/kc/tclkit-8.6.14"
+      - name: Why a package failed (KitCreator keeps one build.log per package)
+        if: ${{ failure() }}
+        run: |
+          for p in zlib tk kitsh tcl mk4tcl udp tls; do
+            f="$RUNNER_TEMP/kcwork/kc/$p/build.log"
+            [ -f "$f" ] && ! [ -f "$RUNNER_TEMP/kcwork/kc/$p/.success" ] && { echo "=================== $p"; grep -n -i "error\|fatal\|undefined\|not found\|No such" "$f" | head -25; echo "--- tail"; tail -n 25 "$f"; }
+          done
+          true
       - name: Show what we built
         if: ${{ !cancelled() }}
         run: |
