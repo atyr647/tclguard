@@ -68,7 +68,13 @@ bash build/pre.sh >/dev/null 2>&1 || true
 export KITCREATOR_PKGS='tk itcl mk4tcl udp tls'
 case $target in
   linux) ./kitcreator 8.6.14 --enable-64bit ;;
-  macos) ./kitcreator 8.6.14 --enable-64bit ;;
+  macos)
+    # Current Apple clang compiles old C as C17/C23 and rejects what these old sources do (K&R definitions in kitsh, zlib's fdopen
+    # stub), so ask for C99; Tk must be the native Aqua build (without this it looks for X11 headers, or builds against XQuartz
+    # when that happens to be installed).
+    export CFLAGS="${CFLAGS:-} -std=gnu99 -Dfdopen=fdopen"
+    export CONFIGUREEXTRA="--enable-aqua"
+    ./kitcreator 8.6.14 --enable-64bit ;;
   win64)
     : "${TCLKIT:?set TCLKIT to a native tclkit (the linux one built above)}"
     export TCLKIT PKG_CONFIG_LIBDIR=/usr/x86_64-w64-mingw32/lib/pkgconfig
