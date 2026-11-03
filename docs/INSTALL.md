@@ -44,9 +44,11 @@ you put there stays.
 * Shortcuts are created with PowerShell (WScript.Shell COM, hidden window, `-EncodedCommand`, so spaces and
   non-ASCII user names are safe). The "Start at sign-in" task is the same Scheduled Task as *Settings > Start
   TclGuard when I sign in*.
-* **Installing over a running copy:** Windows lets a running .exe be renamed, so the old file becomes
-  `tclguard.exe.old`, the new one takes its place, and the old one keeps running until restarted. `.old` is
-  deleted at the next start and by uninstall.
+* **Installing over a running copy:** Windows does not allow a running single-file program to be renamed or overwritten
+  (it keeps its own file open), so the installation stops with a message ("... is in use ... close TclGuard (also check
+  Task Manager and the TclGuard scheduled task) and run the installation again") and changes nothing. Close the running
+  TclGuard, then install again. (Self-updates are different: the running program swaps itself through a helper after
+  it exits, see UPDATES.md.)
 * **Uninstall** removes the shortcuts, registry key, Scheduled Task, the *Windows Firewall rule created by
   TclGuard* ("TclGuard Bans", administrator only), the program (plus `.previous`/`.old` from updates), then
   the folder if empty. A running .exe cannot delete itself, so if the program you are running *is* the

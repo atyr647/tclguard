@@ -271,6 +271,8 @@ if OPENSSL and os.name != "nt":
         check("...and costs the guard almost no CPU", c1 - c0 < 1.0, c1 - c0)
 
         # legitimate TLS 1.3 key updates must keep working (they are not renegotiation)
+        # (the renegotiation abuse above may have earned this address a ban, quicker on some machines: start clean)
+        g.ctl("unbanall"); time.sleep(0.3)
         pid, fd = pty.fork()
         if pid == 0:
             os.execvp(OPENSSL, [OPENSSL, "s_client", "-connect", f"127.0.0.1:{port}", "-tls1_3", "-crlf"])

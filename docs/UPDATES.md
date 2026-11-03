@@ -35,8 +35,13 @@ The GUI uses the same API (`::tg::update::check|apply|rollback|status|autoCheck`
   5. the new program is run as `<new> version` (20 s limit) and must print `TclGuard <the manifest's version>`,
      which proves it runs on this machine;
   6. the swap: on Unix the old program is copied to `<name>.previous`, then the new file is renamed over it
-     (atomic). On Windows the running exe is renamed to `<name>.old` (Windows allows that), the new file takes
-     its name, `.previous` is kept too, and `.old` is deleted at the next start.
+     (atomic). **On Windows a running single-file program cannot be renamed, overwritten or deleted** (it keeps its
+     own file open to read the files inside it; measured on a real runner by `tests/platform/windows_lock_probe.ps1`,
+     an ordinary running .exe *can* be renamed). So the old program is copied to `<name>.previous` at once, and a
+     small hidden PowerShell waits for the program to exit and then moves the verified new file into place
+     (retrying for a minute). `update apply` says so; the new version starts the next time you run it, a moment
+     after the old one exits. If a *different* copy of the program is running from the target file, the swap is
+     refused with a message to close it first.
   Every failure path leaves the old program in place and deletes the temporary file.
 * **Transport:** HTTPS only (an `http://` feed, an `http://` download URL in the manifest, and a redirect to
   `http://` are all refused). Certificates are verified against the chain **and the host name** by
