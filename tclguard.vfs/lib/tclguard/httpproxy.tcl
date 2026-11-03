@@ -189,8 +189,12 @@ proc ::tg::http::process {id} {
                     return
                 }
                 set line [string range $buf($id) 0 [expr {$idx - 1}]]
-                # size[;extensions]
-                if {![regexp {^([0-9a-fA-F]{1,12})(;[^\r\n]*)?$} $line -> hex]} {
+                # size[;name[=token|"quoted"]]...  The extensions are forwarded, so they must be
+                # well-formed: an unterminated quote or a control byte is parsed differently by
+                # different backends (some let a quoted string run on across the line break),
+                # which moves the chunk boundaries and hides requests ("funky chunks").
+                if {![regexp {^([0-9a-fA-F]{1,12})(.*)$} $line -> hex ext] ||
+                    ($ext ne "" && ![regexp {^(?:;[!#$%&'*+.^_`|~0-9A-Za-z-]+(?:=(?:[!#$%&'*+.^_`|~0-9A-Za-z-]+|"(?:[\t !#-\[\]-~\x80-\xff]|\\[\t -~\x80-\xff])*"))?)*$} $ext])} {
                     reject $id 400 "bad chunk size" 1
                     return
                 }
@@ -244,6 +248,15 @@ proc ::tg::http::process {id} {
                         reject $id 400 "malformed chunk trailer" 1
                         return
                     }
+                    # RFC 9110 6.5.1: framing, routing and identity fields are never valid as
+                    # trailers, and a backend that merges trailers into the header set would
+                    # let a client smuggle e.g. Content-Length or X-Forwarded-For past the checks.
+                    set tn [string tolower [string range $line 0 [expr {[string first : $line] - 1}]]]
+                    if {$tn in {content-length transfer-encoding host connection upgrade expect te trailer keep-alive
+                                proxy-connection max-forwards content-encoding x-forwarded-for x-real-ip forwarded}} {
+                        reject $id 400 "forbidden chunk trailer field" 1
+                        return
+                    }
                 }
                 emit $id [string range $buf($id) 0 [expr {$idx + 1}]]
                 if {![info exists buf($id)]} return
@@ -295,7 +308,9 @@ proc ::tg::http::parseHead {id block} {
         lappend clean $ln
     }
     set reqline [lindex $clean 0]
-    if {![regexp {^([A-Z]{3,10}) ([^ ]+) HTTP/(1\.[01])$} $reqline -> method target version]} {
+    # A TAB is not a delimiter here: some parsers split the request line on any whitespace and
+    # would see a different target or version than we do (e.g. "GET /\tHTTP/1.0 HTTP/1.1").
+    if {![regexp {^([A-Z]{3,10}) ([^ \t]+) HTTP/(1\.[01])$} $reqline -> method target version]} {
         return {err 400 "malformed request line"}
     }
     if {[string length $target] > [dict get $Lc maxUriLength]} { return {err 414 "URI too long"} }
@@ -310,10 +325,19 @@ proc ::tg::http::parseHead {id block} {
     set realName [string tolower [dict get $Lc realIpHeader]]
     foreach h $hdrs {
         if {[string index $h 0] in {" " "\t"}} { return {err 400 "obsolete header folding"} }
-        if {![regexp {^([!#$%&'*+.^_`|~0-9A-Za-z-]+):[ \t]*(.*?)[ \t]*$} $h -> hn hv]} {
-            return {err 400 "malformed header"}
-        }
+        # name ":" OWS value OWS. Deliberately not one regexp with a lazy `.*?`: Tcl's engine is
+        # quadratic in the value length there (16 KB of header value cost ~0.4 s of CPU).
+        set colon [string first : $h]
+        if {$colon < 1} { return {err 400 "malformed header"} }
+        set hn [string range $h 0 [expr {$colon - 1}]]
+        if {![regexp {^[!#$%&'*+.^_`|~0-9A-Za-z-]+$} $hn]} { return {err 400 "malformed header"} }
+        set hv [string trim [string range $h [expr {$colon + 1}] end] " \t"]
         set ln [string tolower $hn]
+        # Some servers fold "_" to "-" in header names (CGI/WSGI style), so "Content_Length" or
+        # "Transfer_Encoding" would frame the message differently there than here.
+        if {[string first _ $ln] >= 0 && [string map {_ -} $ln] in {content-length transfer-encoding host connection upgrade expect te}} {
+            return {err 400 "ambiguous header name"}
+        }
         lappend parsed [list $ln $hn $hv $h]
         switch -- $ln {
             content-length { lappend cl $hv }
@@ -329,6 +353,14 @@ proc ::tg::http::parseHead {id block} {
     if {$hosts == 0 && $version eq "1.1"} { return {err 400 "missing Host header"} }
     set connTokens {}
     foreach c $conn { lappend connTokens [string trim $c] }
+    # "Connection: Content-Length" (or X-Real-IP ...) tells the next hop to treat that field as
+    # hop-by-hop and strip it: the body would then be parsed as new requests, or the address we
+    # add for the backend would vanish. Nothing legitimate lists these.
+    foreach c $connTokens {
+        if {[string map {_ -} $c] in {content-length transfer-encoding host x-forwarded-for x-real-ip forwarded}} {
+            return {err 400 "Connection header names a protected field"}
+        }
+    }
     # ---- message framing (the part that must agree with the backend) ----
     set framing none; set clen 0
     if {[llength $te]} {
