@@ -62,19 +62,31 @@ jobs:
           .\releases\tclguard-windows-x86_64-console.exe version
           .\releases\tclguard-windows-x86_64-console.exe selftest
       - name: Starpack - unit tests with the Tcl that ships inside it
+        timeout-minutes: 10
         continue-on-error: true
         run: |
           $exe = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
           $failed = 0
           foreach ($t in 'ip','config','bans','firewall','monitor','autostart') {
-            $out = & $exe eval tests\$t.test 2>&1 | Out-String
-            ($out -split "`n" | Select-String 'Total|FAILED' | Select-Object -Last 3) | ForEach-Object { $_.Line }
-            if ($out -match 'Failed\s+[1-9]') { $failed++ }
+            Write-Host "=== $t.test"
+            $out = pwsh -NoProfile -File tools\ci-bounded.ps1 -Exe $exe -Seconds 120 -Arguments 'eval',"tests\$t.test" 2>&1 | Out-String
+            $code = $LASTEXITCODE
+            ($out -split "`n" | Select-String 'Total|FAILED|====|rror|exit|killing' | Select-Object -First 40) | ForEach-Object { $_.Line }
+            if ($code -ne 0) { $failed++; Write-Host "!! $t.test exit code $code" }
           }
           if ($failed) { throw "$failed unit test file(s) failed" }
+      - name: Probe - where does the starpack eval path stall?
+        timeout-minutes: 4
+        continue-on-error: true
+        run: |
+          $exe = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
+          pwsh -NoProfile -File tools\ci-bounded.ps1 -Exe $exe -Seconds 90 -Arguments 'eval','tests\platform\probe.tcl'
       - name: Windows platform tests (real netsh, Task Scheduler, netstat)
-        timeout-minutes: 6
-        run: .\releases\tclguard-windows-x86_64-console.exe eval tests\platform\windows_test.tcl
+        timeout-minutes: 8
+        run: |
+          $exe = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
+          pwsh -NoProfile -File tools\ci-bounded.ps1 -Exe $exe -Seconds 240 -Arguments 'eval','tests\platform\windows_test.tcl'
+          if ($LASTEXITCODE -ne 0) { throw "platform tests exit code $LASTEXITCODE" }
       - name: Integration tests against the starpack (real sockets)
         timeout-minutes: 12
         run: |
