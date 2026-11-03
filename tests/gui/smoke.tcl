@@ -3,6 +3,8 @@
 set root [file normalize [file join [file dirname [info script]] .. ..]]
 lappend auto_path [file join $root tclguard.vfs lib]
 package require tclguard
+# (a starpack started as `<program> eval smoke.tcl` has Tk only when the platform's kit loads it at start: ask for it)
+if {[info commands wm] eq ""} { package require Tk }
 set tmp [file join [expr {[info exists ::env(TMPDIR)] ? $::env(TMPDIR) : "/tmp"}] tg-guismoke-[pid]]
 file mkdir $tmp
 set pass 0; set fail 0

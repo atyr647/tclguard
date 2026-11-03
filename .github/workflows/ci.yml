@@ -337,7 +337,6 @@ jobs:
           python3 -u test_update_starpack.py
       - name: Released starpack - GUI smoke test under Aqua
         if: ${{ !cancelled() }}
-        continue-on-error: true
         run: releases/tclguard-macos-arm64 eval tests/gui/smoke.tcl
       - name: Released starpack - the GUI as root (this is what "Restart as administrator" produces on macOS)
         if: ${{ !cancelled() }}
