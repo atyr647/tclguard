@@ -1,0 +1,137 @@
+source [file join [file dirname [info script]] helpers.tcl]
+loadmods util config
+set ::tg::log::stderr 0
+
+proc listener {args} { dict create listeners [dict create web [dict create {*}$args]] }
+proc errsOf {cfg} { lindex [::tg::cfg::validate $cfg] 0 }
+proc warnsOf {cfg} { lindex [::tg::cfg::validate $cfg] 1 }
+
+test cfg-empty {empty text gives defaults} -body {
+    set c [::tg::cfg::parseText ""]
+    list [dict get $c general firewall] [dict size [dict get $c listeners]]
+} -result {auto 0}
+
+test cfg-comments {comment lines ignored} -body {
+    set c [::tg::cfg::parseText "# hi\ngeneral \{\n  # nope\n  firewall nft\n\}\nlisteners \{\}\n"]
+    dict get $c general firewall
+} -result nft
+
+test cfg-roundtrip {serialize -> parse is lossless} -body {
+    set c [::tg::cfg::new]
+    dict set c general harden 1
+    dict set c general allowlist {1.2.3.4 10.0.0.0/8}
+    dict set c listeners "web" [dict create type http port 80 backendPort 8080 note "My \"cool\" {site}" pathLimits {{^/login 5 60}}]
+    dict set c listeners "mc" [dict create type tcp port 25565 backendPort 25566]
+    set text [::tg::cfg::serialize $c]
+    set c2 [::tg::cfg::parseText $text]
+    list [dict get $c2 general harden] [dict get $c2 general allowlist] \
+         [dict get $c2 listeners web note] [dict get $c2 listeners web pathLimits] \
+         [dict get $c2 listeners mc port] [errsOf $c2]
+} -result {1 {1.2.3.4 10.0.0.0/8} {My "cool" {site}} {{^/login 5 60}} 25565 {}}
+
+test cfg-malformed {malformed file gives a clear error} -body {
+    catch {::tg::cfg::parseText "general \{ firewall"} msg
+    set msg
+} -match glob -result {*not valid*}
+
+test cfg-unknown-section {} -body {
+    catch {::tg::cfg::parseText "bogus \{\}"} msg
+    set msg
+} -match glob -result {*unknown top-level section*}
+
+test cfg-no-code-exec {config text is never evaluated} -body {
+    set ::pwned 0
+    set c [::tg::cfg::parseText "general \{ logFile \{\[set ::pwned 1\]\} \}"]
+    list $::pwned [dict get $c general logFile]
+} -result {0 {[set ::pwned 1]}}
+
+test val-ok {a sane listener validates} -body {
+    errsOf [listener type http port 8080 backendPort 8081]
+} -result {}
+
+test val-loop {same host/port is rejected as a loop} -body {
+    errsOf [listener type tcp port 25565 backendPort 25565]
+} -match glob -result {*loop forever*}
+
+test val-badport {} -body { errsOf [listener type tcp port 99999 backendPort 1] } -match glob -result {*listen port must be*}
+test val-badtype {} -body { errsOf [listener type icmp port 80 backendPort 81] } -match glob -result {*type must be*}
+test val-name {bad names rejected} -body {
+    errsOf [dict create listeners [dict create "bad name!" [dict create type tcp port 9000 backendPort 9001]]]
+} -match glob -result {*name may only contain*}
+test val-dup {duplicate bind rejected} -body {
+    set c [dict create listeners [dict create a {type tcp port 9000 backendPort 9001} b {type tcp port 9000 backendPort 9002}]]
+    errsOf $c
+} -match glob -result {*already uses*}
+test val-tcp-udp-same-port-ok {tcp and udp may share a port number} -body {
+    set c [dict create listeners [dict create a {type tcp port 27015 backendPort 27115} b {type udp port 27015 backendPort 27115}]]
+    errsOf $c
+} -result {}
+test val-allowlist {} -body {
+    errsOf [dict create general {allowlist {1.2.3.4 banana}}]
+} -match glob -result {*'banana' is not a valid*}
+test val-unknown-key {typos produce a warning} -body {
+    warnsOf [dict create general {firewal nft}]
+} -match glob -result {*unknown setting 'firewal'*}
+test val-unknown-listener-key {} -body {
+    warnsOf [listener type tcp port 9000 backendPort 9001 maxConnPerIp 3]
+} -match glob -result {*unknown option 'maxConnPerIp'*}
+test val-pathlimits {} -body {
+    errsOf [listener type http port 8080 backendPort 8081 pathLimits {{^/login 5}}]
+} -match glob -result {*pathLimits entry*}
+test val-pathlimits-regex {} -body {
+    errsOf [listener type http port 8080 backendPort 8081 pathLimits {{{[} 5 60}}]
+} -match glob -result {*pathLimits entry*}
+test val-watcher-nocapture {} -body {
+    errsOf [dict create watchers [dict create w [dict create file /x pattern {Failed from .*}]]]
+} -match glob -result {*capture group*}
+test val-watcher-ok {} -body {
+    errsOf [dict create watchers [dict create w [dict create file /x pattern {from (\S+)}]]]
+} -result {}
+test val-watcher-badre {} -body {
+    errsOf [dict create watchers [dict create w [dict create file /x pattern {(}]]]
+} -match glob -result {*not a valid regular expression*}
+test val-bansteps {} -body { errsOf [dict create general {banSteps {60 abc}}] } -match glob -result {*banSteps entry*}
+test val-factors {} -body { errsOf [dict create general {levelFactors {1 2}}] } -match glob -result {*exactly 4*}
+test val-fw {} -body { errsOf [dict create general {firewall pf}] } -match glob -result {*firewall must be*}
+test val-public-backend {} -body {
+    warnsOf [listener type tcp port 9000 backendHost 8.8.8.8 backendPort 9001]
+} -match glob -result {*public address*}
+
+test preset-all-valid {every preset produces a valid config} -body {
+    set bad {}
+    foreach p $::tg::cfg::presetOrder {
+        set c [::tg::cfg::new]
+        dict set c listeners [::tg::cfg::presetListeners $p]
+        set e [errsOf $c]
+        if {$e ne ""} { lappend bad $p $e }
+    }
+    set bad
+} -result {}
+
+test preset-unique-names {} -body {
+    set a [::tg::cfg::presetListeners valheim]
+    set b [::tg::cfg::presetListeners valheim $a]
+    expr {[llength [dict keys $a]] == 2 && [llength [dict keys $b]] == 2 && [dict keys $a] ne [dict keys $b]}
+} -result 1
+
+test fill-http {http defaults filled in} -body {
+    set L [::tg::cfg::fillListener {type http port 80 backendPort 8080}]
+    list [dict get $L reqRate] [dict get $L challenge] [dict get $L bind]
+} -result {300 auto 0.0.0.0}
+
+test token-gen {} -body {
+    ::tg::cfg::set_ [::tg::cfg::new]
+    ::tg::cfg::ensureToken
+    regexp {^[0-9a-f]{32}$} [::tg::cfg::general controlToken]
+} -result 1
+test token-unique {} -body { expr {[::tg::randomHex 16] ne [::tg::randomHex 16]} } -result 1
+
+test save-load {save() then load() restores config on disk, perms 0600} -body {
+    set f [file join [makeDirectory cfgtest] t.conf]
+    set c [::tg::cfg::new]
+    dict set c listeners x {type udp port 19132 backendPort 19133}
+    ::tg::cfg::save $f $c
+    ::tg::cfg::load $f
+    list [dict get $::tg::cfg::current listeners x port] [format %o [expr {[file attributes $f -permissions] & 0777}]]
+} -result {19132 600}
+cleanupTests

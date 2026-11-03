@@ -1,0 +1,265 @@
+source [file join [file dirname [info script]] helpers.tcl]
+loadmods util config bans
+set ::tg::log::stderr 0
+freezeClock
+
+proc fresh {{extra {}}} {
+    set ::tg::clockSkew 0
+    ::tg::stat::resetForTests
+    array unset ::tg::ban::banned
+    array unset ::tg::ban::score
+    array unset ::tg::ban::hist
+    set ::tg::ban::onBan {}
+    set ::tg::ban::onUnban {}
+    set c [::tg::cfg::new]
+    dict for {k v} $extra { dict set c general $k $v }
+    ::tg::cfg::set_ $c
+    ::tg::ban::configure
+    ::tg::ban::setFile ""
+}
+proc advance {sec} { incr ::tg::clockSkew [expr {$sec * 1000}] }
+
+test ban-basic {} -setup fresh -body {
+    list [::tg::ban::check 8.8.8.8] [::tg::ban::add 8.8.8.8 test 60] [::tg::ban::check 8.8.8.8] [::tg::ban::count]
+} -result {0 1 1 1}
+
+test ban-expiry {ban expires on its own} -setup fresh -body {
+    ::tg::ban::add 8.8.8.8 test 60
+    advance 59
+    set a [::tg::ban::check 8.8.8.8]
+    advance 2
+    list $a [::tg::ban::check 8.8.8.8] [::tg::ban::count]
+} -result {1 0 0}
+
+test ban-tick-expiry {} -setup fresh -body {
+    ::tg::ban::add 8.8.8.8 test 5
+    advance 6
+    ::tg::ban::tick [::tg::now]
+    ::tg::ban::count
+} -result 0
+
+test ban-allowlist {allowlisted addresses can never be banned} -setup fresh -body {
+    list [::tg::ban::add 192.168.1.5 x 60] [::tg::ban::check 192.168.1.5] [::tg::ban::strike 127.0.0.1 1000 x]
+} -result {0 0 0}
+
+test ban-allowlist-custom {} -setup {fresh {allowlist {8.8.8.0/24}}} -body {
+    list [::tg::ban::add 8.8.8.9 x 60] [::tg::ban::add 8.8.9.9 x 60]
+} -result {0 1}
+
+test ban-blocklist {} -setup {fresh {blocklist {5.5.0.0/16}}} -body {
+    list [::tg::ban::check 5.5.1.1] [::tg::ban::check 5.6.1.1]
+} -result {2 0}
+
+test ban-allow-beats-block {} -setup {fresh {allowlist {5.5.5.5} blocklist {5.5.0.0/16}}} -body {
+    list [::tg::ban::check 5.5.5.5] [::tg::ban::check 5.5.5.6]
+} -result {0 2}
+
+test ban-v6-aggregate {a whole /64 is banned together} -setup fresh -body {
+    ::tg::ban::add 2001:db8:1:1:aaaa::1 test 60
+    list [::tg::ban::check 2001:db8:1:1:bbbb::2] [::tg::ban::check 2001:db8:1:2::1] [lindex [::tg::ban::all] 0 1]
+} -result {1 0 2001:db8:1:1::/64}
+
+test ban-v4mapped {v4-mapped v6 hits the v4 ban} -setup fresh -body {
+    ::tg::ban::add 9.9.9.9 test 60
+    ::tg::ban::check ::ffff:9.9.9.9
+} -result 1
+
+test strike-threshold {strikes accumulate to a ban} -setup {fresh {strikeThreshold 10 strikeLeakPerSec 0}} -body {
+    set r {}
+    for {set i 0} {$i < 4} {incr i} { lappend r [::tg::ban::strike 7.7.7.7 3 flood] }
+    lappend r [::tg::ban::check 7.7.7.7]
+} -result {0 0 0 1 1}
+
+test strike-leak {strikes decay over time} -setup {fresh {strikeThreshold 10 strikeLeakPerSec 1}} -body {
+    ::tg::ban::strike 7.7.7.7 8 x
+    advance 20
+    # 8 decayed to 0; adding 8 again must not ban
+    list [::tg::ban::strike 7.7.7.7 8 x] [::tg::ban::check 7.7.7.7]
+} -result {0 0}
+
+test strike-no-leak-burst {} -setup {fresh {strikeThreshold 10 strikeLeakPerSec 1}} -body {
+    ::tg::ban::strike 7.7.7.7 8 x
+    advance 1
+    list [::tg::ban::strike 7.7.7.7 8 x] [::tg::ban::check 7.7.7.7]
+} -result {1 1}
+
+test ban-escalation {repeat offenders get longer bans} -setup {fresh {banSteps {10 100 1000}}} -body {
+    set r {}
+    foreach i {1 2 3 4} {
+        ::tg::ban::add 6.6.6.6 test
+        lappend r [expr {([dict get [::tg::ban::lookup 6.6.6.6] until] - [::tg::now]) / 1000}]
+        ::tg::ban::remove 6.6.6.6 expired
+    }
+    set r
+} -result {10 100 1000 1000}
+
+test ban-escalation-reset {history forgotten after banResetAfter} -setup {fresh {banSteps {10 100 1000} banResetAfter 3600}} -body {
+    ::tg::ban::add 6.6.6.6 test
+    ::tg::ban::remove 6.6.6.6 expired
+    advance 3700
+    ::tg::ban::add 6.6.6.6 test
+    expr {([dict get [::tg::ban::lookup 6.6.6.6] until] - [::tg::now]) / 1000}
+} -result 10
+
+test ban-manual-unban-resets {} -setup {fresh {banSteps {10 100 1000}}} -body {
+    ::tg::ban::add 6.6.6.6 test
+    ::tg::ban::remove 6.6.6.6 manual
+    ::tg::ban::add 6.6.6.6 test
+    expr {([dict get [::tg::ban::lookup 6.6.6.6] until] - [::tg::now]) / 1000}
+} -result 10
+
+test ban-permanent {sec 0 = forever} -setup fresh -body {
+    ::tg::ban::add 6.6.6.6 test 0 manual
+    advance 999999
+    ::tg::ban::tick [::tg::now]
+    ::tg::ban::check 6.6.6.6
+} -result 1
+
+test ban-extend-only {an existing ban is never shortened} -setup fresh -body {
+    ::tg::ban::add 6.6.6.6 a 1000
+    set r [::tg::ban::add 6.6.6.6 b 10]
+    list $r [expr {([dict get [::tg::ban::lookup 6.6.6.6] until] - [::tg::now]) / 1000}]
+} -result {0 1000}
+
+proc cbBan {k info} { lappend ::ev [list ban $k [dict get $info source]] }
+proc cbUnban {k} { lappend ::ev [list unban $k] }
+test ban-callbacks {} -setup fresh -body {
+    set ::ev {}
+    ::tg::ban::registerOnBan cbBan
+    ::tg::ban::registerOnUnban cbUnban
+    ::tg::ban::add 6.6.6.6 x 60 manual
+    ::tg::ban::remove 6.6.6.6
+    set ::ev
+} -result {{ban 6.6.6.6 manual} {unban 6.6.6.6}}
+
+test ban-persist {bans survive a restart; expired ones do not} -setup fresh -body {
+    set f [file join [makeDirectory bantest] bans.db]
+    ::tg::ban::setFile $f
+    ::tg::ban::add 1.1.1.1 keep 600
+    ::tg::ban::add 2.2.2.2 forever 0 manual
+    ::tg::ban::add 3.3.3.3 gone 5
+    ::tg::ban::save
+    advance 10
+    array unset ::tg::ban::banned
+    set restored [lsort [::tg::ban::load]]
+    list $restored [::tg::ban::check 1.1.1.1] [::tg::ban::check 2.2.2.2] [::tg::ban::check 3.3.3.3]
+} -result {{1.1.1.1 2.2.2.2} 1 1 0}
+
+test ban-persist-corrupt {a corrupt ban file is survived} -setup fresh -body {
+    set f [file join [makeDirectory bantest2] bans.db]
+    set fh [open $f w]; puts $fh "[string repeat [format %c 123] 3] garbage"; close $fh
+    ::tg::ban::setFile $f
+    ::tg::ban::load
+    ::tg::ban::count
+} -result 0
+
+test ban-persist-hostile {a tampered file with bad keys is filtered} -setup fresh -body {
+    set f [file join [makeDirectory bantest3] bans.db]
+    set fh [open $f w]
+    puts $fh [list version 1 banned [list "not an ip; rm -rf /" {until 0 since 0 reason x level 0 source auto} 4.4.4.4 {until 0 since 0 reason x level 0 source auto}]]
+    close $fh
+    ::tg::ban::setFile $f
+    ::tg::ban::load
+} -result 4.4.4.4
+
+# ---- trust ----
+test trust-basic {} -body {
+    array unset ::tg::trust::good
+    ::tg::trust::note 8.8.8.8
+    list [::tg::trust::known 8.8.8.8] [::tg::trust::known 8.8.4.4] [::tg::trust::known ::ffff:8.8.8.8]
+} -result {1 0 1}
+test trust-prune {cap enforced} -body {
+    array unset ::tg::trust::good
+    set ::tg::trust::max 50
+    for {set i 0} {$i < 120} {incr i} { ::tg::trust::note 20.0.0.$i; incr ::tg::clockSkew 10 }
+    set n [::tg::trust::count]
+    set ::tg::trust::max 50000
+    expr {$n <= 50}
+} -result 1
+test trust-persist {} -body {
+    array unset ::tg::trust::good
+    set f [file join [makeDirectory trusttest] trusted.db]
+    ::tg::trust::setFile $f
+    ::tg::trust::note 8.8.8.8
+    ::tg::trust::save
+    array unset ::tg::trust::good
+    ::tg::trust::load
+    ::tg::trust::known 8.8.8.8
+} -result 1
+
+# ---- level ----
+proc lv {{extra {}}} {
+    fresh $extra
+    set ::tg::level::lvl 0
+    set ::tg::level::manual -1
+    set ::tg::level::hot 0
+    set ::tg::level::calm 0
+    ::tg::level::configure
+}
+test level-classify {} -body {
+    list [::tg::level::classify 10 {50 100 200}] [::tg::level::classify 50 {50 100 200}] [::tg::level::classify 150 {50 100 200}] [::tg::level::classify 999 {50 100 0}]
+} -result {0 1 2 2}
+
+test level-needs-two-seconds {a single spike does not raise the level} -setup lv -body {
+    ::tg::level::evaluate {connPerSec 500}
+    set a [::tg::level::get]
+    ::tg::level::evaluate {connPerSec 500}
+    list $a [::tg::level::get]
+} -result {0 2}
+
+test level-spike-reset {} -setup lv -body {
+    ::tg::level::evaluate {connPerSec 500}
+    ::tg::level::evaluate {connPerSec 1}
+    ::tg::level::evaluate {connPerSec 500}
+    ::tg::level::get
+} -result 0
+
+test level-lockdown-needs-opt-in {} -setup lv -body {
+    foreach i {1 2 3} { ::tg::level::evaluate {connPerSec 99999} }
+    ::tg::level::get
+} -result 2
+
+test level-lockdown-optin {} -setup {lv {autoLockdown 1}} -body {
+    foreach i {1 2 3} { ::tg::level::evaluate {connPerSec 99999} }
+    ::tg::level::get
+} -result 3
+
+test level-calm-down {lowers one step at a time after calmSec} -setup {lv {levelCalmSec 5}} -body {
+    foreach i {1 2} { ::tg::level::evaluate {connPerSec 500} }
+    set r [::tg::level::get]
+    for {set i 0} {$i < 4} {incr i} { ::tg::level::evaluate {connPerSec 1} }
+    lappend r [::tg::level::get]
+    ::tg::level::evaluate {connPerSec 1}
+    lappend r [::tg::level::get]
+    for {set i 0} {$i < 5} {incr i} { ::tg::level::evaluate {connPerSec 1} }
+    lappend r [::tg::level::get]
+} -result {2 2 1 0}
+
+test level-manual {manual pin overrides automation} -setup lv -body {
+    ::tg::level::setManual 3
+    foreach i {1 2 3} { ::tg::level::evaluate {connPerSec 0} }
+    set r [::tg::level::get]
+    ::tg::level::setManual auto
+    lappend r [::tg::level::isManual]
+} -result {3 0}
+
+test level-factor {} -setup lv -body {
+    set r [::tg::level::factor]
+    ::tg::level::setManual 2
+    lappend r [::tg::level::factor]
+} -result {1.0 0.35}
+
+test level-multi-signal {any signal can raise it} -setup lv -body {
+    foreach i {1 2} { ::tg::level::evaluate {connPerSec 1 rxPps 70000 rxLinkPct 10} }
+    dict get [::tg::level::status] reason
+} -match glob -result {rxPps*}
+
+test level-callback {} -setup lv -body {
+    set ::ev {}
+    ::tg::level::registerOnChange {apply {{o n w} {lappend ::ev "$o->$n"}}}
+    ::tg::level::setManual 1
+    ::tg::level::setManual 0
+    set ::ev
+} -result {0->1 1->0}
+
+cleanupTests

@@ -1,0 +1,213 @@
+source [file join [file dirname [info script]] helpers.tcl]
+loadmods util config bans firewall
+set ::tg::log::stderr 0
+freezeClock
+
+# Capture every command instead of executing it.
+set ::cmds {}
+set ::failIf {}        ;# list of {glob rc output}: first whose glob matches the input fails
+proc fakeRunner {argv input} {
+    lappend ::cmds [list $argv $input]
+    foreach f $::failIf {
+        lassign $f glob rc out
+        if {[string match $glob "$argv $input"]} { return [list $rc $out] }
+    }
+    return [list 0 ""]
+}
+proc setupFw {{backend nft} {extra {}} {listeners {}}} {
+    set ::cmds {}
+    set ::failIf {}
+    set ::tg::clockSkew 0
+    array unset ::tg::ban::banned
+    array unset ::tg::ban::hist
+    set ::tg::ban::onBan {}
+    set ::tg::ban::onUnban {}
+    set c [::tg::cfg::new]
+    dict for {k v} $extra { dict set c general $k $v }
+    dict set c listeners $listeners
+    ::tg::cfg::set_ $c
+    ::tg::ban::configure
+    set ::tg::fw::runner fakeRunner
+    set ::tg::fw::backend $backend
+    set ::tg::fw::installed 0
+    set ::tg::fw::queue {}
+    array unset ::tg::fw::active
+    set ::tg::fw::features {}
+    ::tg::ban::registerOnBan ::tg::fw::onBan
+    ::tg::ban::registerOnUnban ::tg::fw::onUnban
+}
+# nft binary lookup is irrelevant under the fake runner
+proc ::tg::fw::which {prog} { return $prog }
+
+set L {web {type http port 8080 backendPort 8081} mc {type tcp port 25565 backendPort 25566} bed {type udp port 19132 backendPort 19133} off {type udp port 5555 backendPort 5556 enabled 0}}
+
+test fw-minimize {} -body {
+    ::tg::fw::minimize {10.0.0.0/8 10.1.1.1 10.0.0.0/8 192.168.0.0/16 192.168.5.0/24 2001:db8::/32 2001:db8:1::/64}
+} -result {10.0.0.0/8 192.168.0.0/16 2001:db8::/32}
+
+test fw-script-base {no hardening: ban chain + sets only} -setup {setupFw nft {} $L} -body {
+    set s [::tg::fw::nftScript 0 0]
+    list [string match "*chain ban*" $s] [string match "*chain guard*" $s] [string match "*hook prerouting priority -300*" $s] \
+         [string match "*set ban4*timeout*" $s] [string match "*10.0.0.0/8*" $s]
+} -result {1 0 1 1 1}
+
+test fw-script-harden {} -setup {setupFw nft {harden 1} $L} -body {
+    set s [::tg::fw::nftScript 1 1]
+    list [string match "*tcp dport { 8080, 25565 } tcp flags*syn4*" $s] \
+         [string match "*udp dport { 19132 } add @udp4*" $s] \
+         [string match "*5555*" $s] \
+         [string match "*ip6 saddr and ffff:ffff:ffff:ffff:: limit rate*" $s] \
+         [string match "*ct count over 200*" $s] \
+         [string match "*ct state invalid*" $s] \
+         [string match "*ip frag-off*" $s]
+} -result {1 1 0 1 1 1 1}
+
+test fw-script-noconnlimit {} -setup {setupFw nft {harden 1} $L} -body {
+    string match "*ct count*" [::tg::fw::nftScript 1 0]
+} -result 0
+
+test fw-script-options-off {} -setup {setupFw nft {harden 1 hardenDropInvalid 0 hardenDropFragments 0 hardenDropBogusFlags 0} $L} -body {
+    set s [::tg::fw::nftScript 1 0]
+    list [string match "*ct state invalid*" $s] [string match "*frag-off*" $s] [string match "*fin|syn) ==*" $s]
+} -result {0 0 0}
+
+test fw-script-custom-limits {} -setup {setupFw nft {harden 1 hardenSynRate 7 hardenSynBurst 9 hardenUdpRate 123} $L} -body {
+    set s [::tg::fw::nftScript 1 0]
+    list [string match "*rate over 7/second burst 9 packets*" $s] [string match "*rate over 123/second*" $s]
+} -result {1 1}
+
+test fw-script-blocklist {} -setup {setupFw nft {blocklist {5.5.0.0/16 5.5.5.5 6.6.6.6}} $L} -body {
+    set s [::tg::fw::nftScript 0 0]
+    list [string match "*set block4*elements = { 5.5.0.0/16, 6.6.6.6 }*" $s]
+} -result 1
+
+test fw-sync-installs-and-mirrors {} -setup {setupFw nft {} $L} -body {
+    ::tg::ban::add 1.2.3.4 x 600
+    ::tg::ban::add 2001:db8:1:1::5 x 0 manual
+    ::tg::fw::sync
+    set all [join [lmap c $::cmds {lindex $c 1}] \n]
+    list [string match "*delete table inet tclguard*" $all] \
+         [string match "*add element inet tclguard ban4 { 1.2.3.4 timeout 600s }*" $all] \
+         [string match "*add element inet tclguard ban6 { 2001:db8:1:1::/64 }*" $all]
+} -result {1 1 1}
+
+test fw-ban-event-queues-then-commits {} -setup {setupFw nft {} $L} -body {
+    ::tg::fw::sync
+    set ::cmds {}
+    ::tg::ban::add 9.9.9.9 flood 120
+    set before [llength $::cmds]
+    ::tg::fw::commit
+    list $before [string match "*add element inet tclguard ban4 { 9.9.9.9 timeout 120s }*" [lindex $::cmds 0 1]]
+} -result {0 1}
+
+test fw-unban {} -setup {setupFw nft {} $L} -body {
+    ::tg::fw::sync
+    ::tg::ban::add 9.9.9.9 flood 120
+    ::tg::fw::commit
+    set ::cmds {}
+    ::tg::ban::remove 9.9.9.9
+    ::tg::fw::commit
+    lindex $::cmds 0 1
+} -result {delete element inet tclguard ban4 { 9.9.9.9 }}
+
+test fw-rebanning-deletes-first {} -setup {setupFw nft {} $L} -body {
+    ::tg::fw::sync
+    ::tg::ban::add 9.9.9.9 a 60
+    ::tg::fw::commit
+    set ::cmds {}
+    ::tg::ban::add 9.9.9.9 b 600
+    ::tg::fw::commit
+    split [lindex $::cmds 0 1] \n
+} -result {{delete element inet tclguard ban4 { 9.9.9.9 }} {add element inet tclguard ban4 { 9.9.9.9 timeout 600s }}}
+
+test fw-connlimit-fallback {unsupported ct count -> retry without it} -setup {setupFw nft {harden 1} $L} -body {
+    set ::failIf [list [list {*ct count*} 1 {Error: Could not process rule: Operation not supported}]]
+    set ok [::tg::fw::sync]
+    set last [lindex $::cmds end 1]
+    list $ok [string match "*ct count*" $last] [string match "*syn4*" $last] $::tg::fw::features $::tg::fw::hardened
+} -result {1 0 1 {} 1}
+
+test fw-install-failure {a genuine failure is reported, not hidden} -setup {setupFw nft {} $L} -body {
+    set ::failIf [list [list {*delete table*} 1 {Error: permission denied}]]
+    list [::tg::fw::sync] [::tg::fw::enabled] $::tg::fw::installed [string match "*permission denied*" $::tg::fw::lastError]
+} -result {0 1 0 1}
+
+test fw-no-injection {non-IP keys never reach a command line} -setup {setupFw nft {} $L} -body {
+    ::tg::fw::sync
+    set ::cmds {}
+    foreach evil [list "1.2.3.4 [format %c 125]; flush ruleset; [format %c 123]" {$(reboot)} {1.2.3.4;reboot} "1.2.3.4\nflush ruleset" {`id`}] {
+        ::tg::fw::enqueue ban $evil 0
+    }
+    ::tg::fw::commit
+    llength $::cmds
+} -result 0
+
+test fw-disabled-noop {} -setup {setupFw none {} $L} -body {
+    ::tg::ban::add 1.2.3.4 x 60
+    ::tg::fw::commit
+    llength $::cmds
+} -result 0
+
+test fw-table-vanished {if someone flushes the ruleset, reinstall} -setup {setupFw nft {} $L} -body {
+    ::tg::fw::sync
+    set ::cmds {}
+    set ::failIf [list [list {*add element*} 1 {Error: No such file or directory}]]
+    ::tg::ban::add 9.9.9.9 flood 120
+    ::tg::fw::commit
+    set n 0
+    foreach c $::cmds { if {[string match "*delete table*" [lindex $c 1]]} { incr n } }
+    expr {$n >= 1}
+} -result 1
+
+test fw-counters-parse {} -setup {setupFw nft {} $L} -body {
+    set ::tg::fw::runner {apply {{a i} {list 0 "table inet tclguard \{\n\tcounter c_ban \{\n\t\tpackets 12 bytes 700\n\t\}\n\tcounter c_syn \{\n\t\tpackets 3 bytes 180\n\t\}\n\}"}}}
+    ::tg::fw::nftCounters
+} -result {c_ban 12 c_syn 3}
+
+# ---- iptables / ipset ----
+test fw-ipset {} -setup {setupFw iptables {} $L} -body {
+    ::tg::ban::add 1.2.3.4 x 90
+    ::tg::ban::add 2001:db8::1 x 0 manual
+    ::tg::fw::sync
+    set flat [lmap c $::cmds {lindex $c 0}]
+    list [lsearch -exact $flat {ipset add tclguard 1.2.3.4 timeout 90 -exist}] \
+         [lsearch -exact $flat {ipset add tclguard6 2001:db8::/64 timeout 0 -exist}]
+} -match glob -result {[0-9]* [0-9]*}
+
+# ---- netsh ----
+test fw-netsh-add {first time: add rule with all addresses} -setup {setupFw netsh {} $L} -body {
+    set ::failIf [list [list {*show rule*} 1 {No rules match}]]
+    ::tg::fw::sync
+    ::tg::ban::add 1.2.3.4 x 90
+    ::tg::ban::add 5.6.7.8 x 90
+    set ::cmds {}
+    ::tg::fw::commit
+    set last [lindex $::cmds end 0]
+    list [lindex $last 0] [expr {"remoteip=1.2.3.4,5.6.7.8" in $last}] [expr {"action=block" in $last}] [expr {"dir=in" in $last}] [expr {"add" in $last}]
+} -result {netsh 1 1 1 1}
+
+test fw-netsh-update {rule already exists: update remoteip} -setup {setupFw netsh {} $L} -body {
+    ::tg::fw::sync
+    ::tg::ban::add 1.2.3.4 x 90
+    set ::cmds {}
+    ::tg::fw::commit
+    set last [lindex $::cmds end 0]
+    list [expr {"set" in $last}] [expr {"new" in $last}] [expr {"remoteip=1.2.3.4" in $last}]
+} -result {1 1 1}
+
+test fw-netsh-empty-removes-rule {} -setup {setupFw netsh {} $L} -body {
+    ::tg::fw::sync
+    ::tg::ban::add 1.2.3.4 x 90
+    ::tg::fw::commit
+    ::tg::ban::remove 1.2.3.4
+    set ::cmds {}
+    ::tg::fw::commit
+    lrange [lindex $::cmds end 0] 1 end
+} -result {advfirewall firewall delete rule {name=TclGuard Bans}}
+
+test fw-status {} -setup {setupFw nft {} $L} -body {
+    ::tg::fw::sync
+    dict get [::tg::fw::status] installed
+} -result 1
+
+cleanupTests

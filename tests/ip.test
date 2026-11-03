@@ -1,0 +1,67 @@
+source [file join [file dirname [info script]] helpers.tcl]
+loadmods util
+set ::tg::log::stderr 0
+
+foreach {name in out} {
+  v4        1.2.3.4                    1.2.3.4
+  v4zero    0.0.0.0                    0.0.0.0
+  v6loop    ::1                        ::1
+  v6full    2001:0db8:0000:0000:0000:0000:0000:0001 2001:db8::1
+  v6caps    2001:DB8::ABCD             2001:db8::abcd
+  v6mapped  ::ffff:10.1.2.3            10.1.2.3
+  v6mapped2 0:0:0:0:0:ffff:1.2.3.4     1.2.3.4
+  v6any     ::                         ::
+  v6tail    64:ff9b::1.2.3.4           64:ff9b::102:304
+  v6zone    fe80::1%eth0               fe80::1
+  v6nocomp  1:2:3:4:5:6:7:8            1:2:3:4:5:6:7:8
+  v6single  1:0:3:4:5:6:7:8            1:0:3:4:5:6:7:8
+  v6lead    ::2:3                      ::2:3
+  v6trail   1:2::                      1:2::
+} {
+    test ip-norm-$name "norm $in" -body { ::tg::ip::norm $in } -result $out
+}
+
+foreach {name in} {
+  empty "" word hello v4short 1.2.3 v4big 1.2.3.256 v4lead 01.2.3.4 v4five 1.2.3.4.5
+  v6dbl 1::2::3 v6triple 1:::2 v6toomany 1:2:3:4:5:6:7:8:9 v6bad 12345::1 v6trail1 1:2:3:4:5:6:7:
+  v6lead1 :1:2:3:4:5:6:7 v6hex g::1 v4neg -1.2.3.4 v6fill 1:2:3:4:5:6:7::8 v4mappedbad ::ffff:1.2.3
+} {
+    test ip-invalid-$name "reject '$in'" -body { ::tg::ip::norm $in } -result ""
+}
+
+test ip-key-v4 {v4 key is exact} -body { ::tg::ip::key 8.8.4.4 } -result 8.8.4.4
+test ip-key-v6 {v6 aggregates to /64} -body {
+    list [::tg::ip::key 2001:db8:1:2:aaaa:bbbb:cccc:dddd] [::tg::ip::key 2001:db8:1:2::1]
+} -result {2001:db8:1:2::/64 2001:db8:1:2::/64}
+test ip-key-mapped {mapped v6 keyed as v4} -body { ::tg::ip::key ::ffff:9.9.9.9 } -result 9.9.9.9
+
+test cidr-norm1 {normalise masks host bits} -body { ::tg::ip::normCidr 10.1.2.3/8 } -result 10.0.0.0/8
+test cidr-norm2 {} -body { ::tg::ip::normCidr 2001:db8::5/32 } -result 2001:db8::/32
+test cidr-norm3 {/32 collapses} -body { ::tg::ip::normCidr 1.2.3.4/32 } -result 1.2.3.4
+test cidr-bad1 {} -body { ::tg::ip::normCidr 1.2.3.4/33 } -result ""
+test cidr-bad2 {} -body { ::tg::ip::normCidr 1.2.3.4/ } -result ""
+
+::tg::ip::setLoad t {10.0.0.0/8 192.168.1.5 2001:db8::/32 ::1 172.16.0.0/12}
+foreach {ip want} {
+  10.5.5.5 1  11.0.0.1 0  192.168.1.5 1  192.168.1.6 0  172.31.255.255 1  172.32.0.0 0
+  2001:db8:ffff::1 1  2001:db9::1 0  ::1 1  ::2 0  ::ffff:10.1.1.1 1  garbage 0
+} {
+    test set-match-$ip "match $ip" -body { ::tg::ip::setMatch t $ip } -result $want
+}
+test set-bad {bad items reported} -body { ::tg::ip::setLoad u {1.1.1.1 nope 2.2.2.0/99} } -result {nope 2.2.2.0/99}
+test private-1 {} -body { list [::tg::ip::isPrivate 192.168.0.9] [::tg::ip::isPrivate 8.8.8.8] [::tg::ip::isPrivate fd00::1] } -result {1 0 1}
+test parseList {} -body { ::tg::ip::parseList "1.1.1.1, 2.2.2.2 # c\n\n3.3.3.3;4.4.4.4" } -result {1.1.1.1 2.2.2.2 3.3.3.3 4.4.4.4}
+
+test hostport-1 {} -body { ::tg::splitHostPort 127.0.0.1:80 } -result {127.0.0.1 80}
+test hostport-2 {} -body { ::tg::splitHostPort {[::1]:8080} } -result {::1 8080}
+test hostport-3 {} -body { ::tg::splitHostPort 25565 0.0.0.0 } -result {0.0.0.0 25565}
+test hostport-4 {} -body { ::tg::splitHostPort host:0 } -result {}
+test hostport-5 {} -body { ::tg::splitHostPort host:70000 } -result {}
+test fmt-1 {} -body { list [::tg::fmtBytes 1536] [::tg::fmtDuration 3725] [::tg::fmtRate 12345] } -result {{1.5 KB} {1h 02m} 12.3k}
+
+test log-inject {newlines stripped from log text} -body {
+    ::tg::log::msg warn "evil\nFAKE ALERT line"
+    lindex [lindex [::tg::log::tail 1] 0] 2
+} -result {evil FAKE ALERT line}
+
+cleanupTests
