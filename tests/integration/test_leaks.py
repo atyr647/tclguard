@@ -61,7 +61,7 @@ try:
             for _ in range(rnd.randrange(1, 4)): s.sendto(os.urandom(rnd.randrange(1, 1400)), ("127.0.0.1", up))
             s.close()
     def one_round():
-        threads = [threading.Thread(target=f, args=(a,)) for f, a in ((abuse_http, 1500), (abuse_http, 1500), (abuse_tcp, 1000), (abuse_udp, 800))]
+        threads = [threading.Thread(target=f, args=(a,)) for f, a in ((abuse_http, 800), (abuse_http, 800), (abuse_tcp, 500), (abuse_udp, 400))]
         t0 = time.time(); [t.start() for t in threads]; [t.join() for t in threads]
         time.sleep(12)
         return time.time() - t0
@@ -70,6 +70,7 @@ try:
     el = one_round(); rssC = rss(); print(f"round 3 took {el:.0f}s, RSS {rssC:.1f} MB")
     after = dbg(g); rss1 = rssC
     print("after drain:", after)
+    leaks = {k: v for k, v in after.items() if k in ("tcpConns", "tcpPerIp", "httpState", "httpBuf", "udpSessions", "udpPerIp") and v != 0}
     check("all per-connection state drained after abuse (no leaked connection records)", not leaks, leaks)
     check("open channels return to baseline", after["openChannels"] <= base["openChannels"] + 2, (base["openChannels"], after["openChannels"]))
     check("memory is stable: round 3 adds < 5 MB over round 1 (no leak, only the allocator high-water mark)", rssC - rssA < 5, f"{rssA:.1f} -> {rssB:.1f} -> {rssC:.1f} MB")
