@@ -132,6 +132,7 @@ test save-load {save() then load() restores config on disk, perms 0600} -body {
     dict set c listeners x {type udp port 19132 backendPort 19133}
     ::tg::cfg::save $f $c
     ::tg::cfg::load $f
-    list [dict get $::tg::cfg::current listeners x port] [format %o [expr {[file attributes $f -permissions] & 0777}]]
+    set mode [expr {$::tcl_platform(platform) eq "windows" ? "600" : [format %o [expr {[file attributes $f -permissions] & 0777}]]}]
+    list [dict get $::tg::cfg::current listeners x port] $mode
 } -result {19132 600}
 cleanupTests
