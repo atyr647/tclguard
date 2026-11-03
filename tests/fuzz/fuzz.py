@@ -153,7 +153,9 @@ def cmd_replay(a):
             variant = meta.get("variant", "default")
             if variant.startswith("inproc:"):
                 variant = variant.split(":", 1)[1]
-            lv = lvs.setdefault(variant, L.Live(variant if variant in L.VARIANTS else "default"))
+            if variant not in lvs:   # (setdefault would start a new guard for every case)
+                lvs[variant] = L.Live(variant if variant in L.VARIANTS else "default")
+            lv = lvs[variant]
             fs = lv.submit(case)
             lv.settle_tables()
             print("%s: %s" % (p, "findings: %s" % fs if fs else "clean"))

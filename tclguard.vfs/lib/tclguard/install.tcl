@@ -408,9 +408,12 @@ proc ::tg::install::utf16le {s} {
     binary format s* $units
 }
 
+# Every script starts by silencing progress records: with redirected output PowerShell otherwise prints
+# "Preparing modules for first use" as CLIXML on stderr, which then ends up in our results and messages.
+set ::tg::install::psPrefix "\$ProgressPreference='SilentlyContinue'; "
 proc ::tg::install::psArgv {script} {
     list powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden \
-        -EncodedCommand [binary encode base64 [utf16le $script]]
+        -EncodedCommand [binary encode base64 [utf16le $::tg::install::psPrefix$script]]
 }
 
 proc ::tg::install::psDecode {argv} {
@@ -428,6 +431,7 @@ proc ::tg::install::psDecode {argv} {
         }
         append out [format %c $u]
     }
+    if {[string first $::tg::install::psPrefix $out] == 0} { set out [string range $out [string length $::tg::install::psPrefix] end] }
     return $out
 }
 

@@ -16,20 +16,28 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq tcl8.6 tk8.6 tcllib tcl-udp tcl-tls tcl-thread tcl-vfs xvfb nftables python3 imagemagick openssl
       - name: Lint
+        if: ${{ !cancelled() }}
         run: python3 tools/lint_vars.py
       - name: Unit tests
+        if: ${{ !cancelled() }}
         run: cd tests && tclsh8.6 all.tcl
       - name: Self-test (source)
+        if: ${{ !cancelled() }}
         run: tclsh8.6 tclguard.vfs/main.tcl selftest
       - name: GUI smoke test (Xvfb)
+        if: ${{ !cancelled() }}
         run: cd tests/gui && xvfb-run -a -s "-screen 0 1300x900x24" wish8.6 smoke.tcl
       - name: Integration tests (real sockets)
+        if: ${{ !cancelled() }}
         run: cd tests/integration && python3 -u test_http.py && python3 -u test_features.py && python3 -u test_update.py
       - name: HTTP parser fuzzer (deterministic smoke run with smuggling, liveness and CPU oracles)
+        if: ${{ !cancelled() }}
         run: python3 -u tests/fuzz/fuzz.py ci
       - name: IPv6 end to end (listeners, backends, PROXY protocol, UDP, per-/64 bans)
+        if: ${{ !cancelled() }}
         run: cd tests/integration && sudo -E env "PATH=$PATH" python3 -u test_ipv6.py
       - name: TLS termination tests (source, system OpenSSL)
+        if: ${{ !cancelled() }}
         run: cd tests/integration && python3 -u test_tls.py
       - uses: actions/setup-go@v5
         with:
@@ -40,26 +48,32 @@ jobs:
           echo "PEBBLE=$(go env GOPATH)/bin/pebble" >> "$GITHUB_ENV"
           echo "PEBBLE_TESTDIR=$(ls -d $(go env GOMODCACHE)/github.com/letsencrypt/pebble/v2@*/test | head -1)" >> "$GITHUB_ENV"
       - name: Automatic certificates (ACME) against Pebble
+        if: ${{ !cancelled() }}
         run: cd tests/integration && python3 -u test_acme.py
       - name: Real-kernel nftables tests
+        if: ${{ !cancelled() }}
         run: sudo python3 tests/kernel/run_kernel_tests.py
       - name: Installer with real systemd (needs a starpack built from this source tree)
         run: |
           chmod +x releases/tclguard-linux-x86_64
           sudo -E ./releases/tclguard-linux-x86_64 eval tests/platform/linux_install_test.tcl
       - name: Released starpack
+        if: ${{ !cancelled() }}
         run: |
           chmod +x releases/tclguard-linux-x86_64
           ( cd releases && sha256sum -c SHA256SUMS --ignore-missing )
           ./releases/tclguard-linux-x86_64 version
           ./releases/tclguard-linux-x86_64 selftest
       - name: Released starpack - TLS and ACME (its own OpenSSL)
+        if: ${{ !cancelled() }}
         run: |
           export TG_CMD="$PWD/releases/tclguard-linux-x86_64"
           cd tests/integration && python3 -u test_tls.py && python3 -u test_acme.py
       - name: Released starpack - a real starpack updates ITSELF (signed manifest, local HTTPS, rollback)
+        if: ${{ !cancelled() }}
         run: cd tests/integration && python3 -u test_update_starpack.py
       - name: Released starpack - survives more connections than select() can watch (FD_SETSIZE)
+        if: ${{ !cancelled() }}
         run: cd tests/integration && TG_CMD="$PWD/../../releases/tclguard-linux-x86_64" python3 -u test_fdlimit.py
 
   # ---------------------------------------------------------------- Windows ----
@@ -104,6 +118,7 @@ jobs:
           }
           if ($failed) { throw "$failed unit test file(s) failed" }
       - name: Windows platform tests (real netsh, Task Scheduler, netstat)
+        if: ${{ !cancelled() }}
         timeout-minutes: 10
         run: |
           $exe = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
@@ -115,6 +130,12 @@ jobs:
             Write-Host "##[endgroup]"
           }
           if ($failed) { throw "platform phases failed: $($failed -join ', ')" }
+      - name: Probe - what does Windows allow on a RUNNING starpack's file?
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 3
+        shell: pwsh
+        run: powershell -NoProfile -File tests/platform/windows_lock_probe.ps1 "$PWD\releases\tclguard-windows-x86_64-console.exe"
       - name: Windows installer tests (shortcuts, Add/Remove Programs, Scheduled Task, running .exe, self-delete)
         timeout-minutes: 15
         run: |
@@ -128,6 +149,7 @@ jobs:
           }
           if ($failed) { throw "installer phases failed: $($failed -join ', ')" }
       - name: Integration tests against the starpack (real sockets)
+        if: ${{ !cancelled() }}
         timeout-minutes: 12
         run: |
           $env:TG_CMD = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
@@ -136,6 +158,7 @@ jobs:
           python -u test_features.py
           Pop-Location
       - name: IPv6 end to end (starpack, real Windows)
+        if: ${{ !cancelled() }}
         timeout-minutes: 8
         run: |
           $env:TG_CMD = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
@@ -147,6 +170,7 @@ jobs:
         with:
           go-version: stable
       - name: TLS termination and automatic certificates (starpack, real Windows)
+        if: ${{ !cancelled() }}
         timeout-minutes: 15
         run: |
           $env:PATH = "C:\Program Files\Git\usr\bin;$env:PATH"      # openssl.exe for the test helpers
@@ -161,6 +185,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "ACME tests failed" }
           Pop-Location
       - name: A real Windows starpack updates ITSELF (rename-over-running exe, signed manifest, rollback)
+        if: ${{ !cancelled() }}
         timeout-minutes: 15
         run: |
           $env:PATH = "C:\Program Files\Git\usr\bin;$env:PATH"      # openssl.exe
@@ -170,6 +195,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "starpack self-update test failed" }
           Pop-Location
       - name: GUI smoke test inside the starpack
+        if: ${{ !cancelled() }}
         timeout-minutes: 6
         run: .\releases\tclguard-windows-x86_64-console.exe eval tests\gui\smoke.tcl
       - name: GUI screenshot (real Windows desktop)
@@ -238,30 +264,38 @@ jobs:
           fi
           $TCLSH <<< 'puts "Thread: [package require Thread]"'
       - name: Unit tests
+        if: ${{ !cancelled() }}
         run: cd tests && for t in ip config bans firewall monitor autostart crypto https install update; do $TCLSH $t.test; done 2>&1 | grep -E "Total|FAILED"
       - name: Self-test (source)
+        if: ${{ !cancelled() }}
         run: $TCLSH tclguard.vfs/main.tcl selftest
       - name: macOS platform tests (real pfctl, LaunchAgent, netstat)
+        if: ${{ !cancelled() }}
         run: sudo -E $TCLSH tests/platform/macos_test.tcl
       - name: macOS installer tests (plist lint, launchctl, stand-in program; no starpack exists)
         run: sudo -E $TCLSH tests/platform/macos_install_test.tcl
       - name: Signed-update integration test (local HTTPS server)
+        if: ${{ !cancelled() }}
         run: cd tests/integration && TCLSH=$TCLSH python3 -u test_update.py
       - name: Integration tests (real sockets)
+        if: ${{ !cancelled() }}
         run: |
           export TG_CMD="$TCLSH $PWD/tclguard.vfs/main.tcl"
           cd tests/integration && python3 -u test_http.py && python3 -u test_features.py
       - name: IPv6 end to end
+        if: ${{ !cancelled() }}
         run: |
           export TG_CMD="$TCLSH $PWD/tclguard.vfs/main.tcl"
           cd tests/integration && python3 -u test_ipv6.py
       - name: TLS termination tests
+        if: ${{ !cancelled() }}
         run: |
           export PATH="$(brew --prefix openssl@3)/bin:$PATH"
           $TCLSH <<< 'puts "tls: [package require tls] [tls::version]"'
           export TG_CMD="$TCLSH $PWD/tclguard.vfs/main.tcl"
           cd tests/integration && python3 -u test_tls.py
       - name: Automatic certificates (ACME) against Pebble
+        if: ${{ !cancelled() }}
         run: |
           export PATH="$(brew --prefix openssl@3)/bin:$PATH"
           go install github.com/letsencrypt/pebble/v2/cmd/pebble@latest
@@ -290,8 +324,10 @@ jobs:
           set +e
           $TCLSH tests/platform/tls_probe.tcl
           echo "probe exit status: $?"
-          ls -la "$HOME/tclpkgs/lib" || true
-          otool -L "$(find $HOME/tclpkgs -name 'libtcltls*.dylib' | head -1)" || true
+          find "$HOME/tclpkgs" -name '*.dylib' -print
+          for f in $(find "$HOME/tclpkgs" -name '*.dylib'); do otool -L "$f"; done
+          echo "---- the same probe under lldb (backtrace of a crash)"
+          lldb -b -o run -o "bt 25" -o "register read" -- $TCLSH tests/platform/tls_probe.tcl 2>&1 | tail -60 || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:

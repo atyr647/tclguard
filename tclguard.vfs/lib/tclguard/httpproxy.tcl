@@ -199,11 +199,12 @@ proc ::tg::http::process {id} {
                     return
                 }
                 scan $hex %x size
-                # Floods of tiny chunks cost us a buffer copy and three writes each (~75 us, whatever the
-                # chunk size), and chunks are not counted as requests; real clients send big ones. Below
-                # 128 bytes a request gets 2000 chunks, which bounds its CPU cost to ~150 ms (with a limit
-                # of 16 bytes, 16-byte chunks cost 40x more CPU per byte than normal traffic, unmetered).
-                if {$size < 128 && [incr nsmall($id)] > 2000} { reject $id 400 "too many tiny chunks" 1; return }
+                # Floods of tiny chunks cost us a buffer copy and three writes each (~75 us on a fast
+                # machine, ~120 us on a CI runner, whatever the chunk size), and chunks are not counted
+                # as requests; real clients send big ones. Below 128 bytes a request gets 1000 chunks,
+                # which bounds its CPU cost to ~120 ms even on slow hardware (with a limit of 16 bytes,
+                # 16-byte chunks cost 40x more CPU per byte than normal traffic, unmetered).
+                if {$size < 128 && [incr nsmall($id)] > 1000} { reject $id 400 "too many tiny chunks" 1; return }
                 incr bodySeen($id) $size
                 if {$bodySeen($id) > [dict get $Lc maxBodyMB] * 1048576} {
                     reject $id 413 "request body too large" 0

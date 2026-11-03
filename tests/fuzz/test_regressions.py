@@ -160,7 +160,9 @@ def corpus():
             name = os.path.basename(p)[:-5]
             cfg = meta.get("config", "default")
             upg = int(meta.get("upg", 0))
-            w = workers.setdefault(cfg, inproc.Worker(cfg))
+            if cfg not in workers:
+                workers[cfg] = inproc.Worker(cfg)
+            w = workers[cfg]
             pieces, end = inproc.flatten(case)
             res = w.run([(pieces, end, upg)])[0]
             import collections
@@ -169,7 +171,9 @@ def corpus():
             variant = meta.get("variant", "default")
             if variant.startswith("inproc:"):
                 variant = variant.split(":", 1)[1]
-            lv = lives.setdefault(variant, L.Live(variant if variant in L.VARIANTS else "default"))
+            if variant not in lives:   # (setdefault would build, and start a guard for, a new Live on EVERY case)
+                lives[variant] = L.Live(variant if variant in L.VARIANTS else "default")
+            lv = lives[variant]
             fs = lv.submit(case)
             check("corpus/%s: live guard is clean" % name, not fs, [f.detail[:100] for f in fs])
         for lv in lives.values():
@@ -178,6 +182,9 @@ def corpus():
     finally:
         for w in workers.values():
             w.close()
+        for lv in lives.values():   # (each one owns a live guard and its backend: leaving them running leaks processes)
+            try: lv.close()
+            except Exception: pass
         for lv in lives.values():
             lv.close()
 
