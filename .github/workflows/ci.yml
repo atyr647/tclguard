@@ -7,6 +7,7 @@ on:
 jobs:
   # ------------------------------------------------------------------ Linux ----
   linux:
+    timeout-minutes: 40
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,6 +36,7 @@ jobs:
 
   # ---------------------------------------------------------------- Windows ----
   windows:
+    timeout-minutes: 40
     runs-on: windows-latest
     defaults:
       run:
@@ -104,6 +106,7 @@ jobs:
 
   # ------------------------------------------------------------------ macOS ----
   macos:
+    timeout-minutes: 40
     runs-on: macos-latest
     env:
       TCLSH: /opt/homebrew/opt/tcl-tk@8/bin/tclsh8.6
@@ -124,7 +127,8 @@ jobs:
           echo "TCLLIBPATH=$HOME/tclpkgs/lib" >> "$GITHUB_ENV"
       - name: Which optional packages are present
         run: |
-          $TCLSH <<< 'foreach p {Tk udp Thread} { puts [format "%-8s %s" $p [expr {[catch {package require $p} v] ? "MISSING" : $v}]] }'
+          # (never load Tk inside tclsh here: on macOS that can block waiting for a window server)
+          $TCLSH <<< 'foreach p {udp Thread} { puts [format "%-8s %s" $p [expr {[catch {package require $p} v] ? "MISSING" : $v}]] }'
           if $TCLSH <<< 'package require udp' >/dev/null 2>&1; then echo "HAVE_UDP=1" >> "$GITHUB_ENV"; else echo "TG_NO_UDP=1" >> "$GITHUB_ENV"; fi
       - name: Unit tests
         run: cd tests && for t in ip config bans firewall monitor autostart; do $TCLSH $t.test; done 2>&1 | grep -E "Total|FAILED"
@@ -138,9 +142,11 @@ jobs:
           cd tests/integration && python3 -u test_http.py && python3 -u test_features.py
       - name: GUI smoke test (Aqua)
         continue-on-error: true
+        timeout-minutes: 5
         run: $WISH tests/gui/smoke.tcl
       - name: GUI screenshot
         continue-on-error: true
+        timeout-minutes: 3
         run: |
           export TCLGUARD_HOME="$RUNNER_TEMP/tgshot"; mkdir -p "$TCLGUARD_HOME"
           $WISH tclguard.vfs/main.tcl --gui --no-firewall &
