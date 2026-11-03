@@ -46,6 +46,19 @@ def D(full, quick): return quick if Q else full
 
 if not os.path.exists(args.tgload): sys.exit("build tgload first:  cd tests/load/tgload && go build -o ../tgload-bin .")
 
+def ensure_loopback_aliases():
+    """macOS only answers on 127.0.0.1 unless the other 127.x.y.z addresses are added to lo0 (Linux and Windows treat all of 127/8 as local)."""
+    if platform.system() != "Darwin" or args.src_prefix: return
+    want = set()
+    for third, n in ((1, 16), (2, 200), (3, 500), (4, 300), (5, 120), (6, 120), (7, 30), (8, 8), (9, 120)):
+        base = third << 8
+        for k in range(n):
+            v = base + k + 1                       # the same arithmetic as tgload's srcAddr
+            want.add(f"127.{(v >> 16) & 255}.{(v >> 8) & 255}.{v & 255}")
+    script = "; ".join(f"ifconfig lo0 alias {a} netmask 255.255.255.255" for a in sorted(want))
+    r = subprocess.run(["sudo", "-n", "sh", "-c", script], capture_output=True, text=True)
+    print(f"macOS: {len(want)} loopback aliases added (rc {r.returncode}) {r.stderr[:200]}", flush=True)
+ensure_loopback_aliases()
 HAVE_TASKSET = shutil.which("taskset") is not None
 def pin(core, cmd): return ["taskset", "-c", core, *cmd] if HAVE_TASKSET else list(cmd)
 
