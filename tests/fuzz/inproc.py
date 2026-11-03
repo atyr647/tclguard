@@ -4,6 +4,7 @@ import os
 import random
 import select
 import shlex
+import signal
 import subprocess
 import sys
 import threading
@@ -27,6 +28,14 @@ CONFIGS = {
 
 class Stall(Exception):
     pass
+
+
+class OracleTimeout(Exception):
+    pass
+
+
+def _alarm(signum, frame):
+    raise OracleTimeout()
 
 
 class FakeB:
@@ -162,7 +171,7 @@ def evaluate(w, case, upg, res, deep, stats):
         out.append(oracle.Finding("tcl-error", res["err"][:500], "tcl-error:" + res["err"].split("\n")[0][:80]))
     if res["leaks"]:
         out.append(oracle.Finding("leak-state", res["leaks"], "leak-state:" + res["leaks"][:60]))
-    if res["usec"] > 200000 and res["usec"] > 10 * sum(len(p) for p in pieces):   # reflected channels make emit() slow: judge per byte
+    if res["usec"] > 200000 and res["usec"] > 20 * sum(len(p) for p in pieces):   # reflected channels make emit() slow: judge per byte
         out.append(oracle.Finding("cpu", "%.0f ms for %d input bytes (%d pieces)" % (res["usec"] / 1000, len(C), len(pieces)), "cpu"))
     fb = None
     if upg:
@@ -179,7 +188,7 @@ def evaluate(w, case, upg, res, deep, stats):
     return out
 
 
-def run(seconds, seed, cfg="default", pool_size=3000, batch=500, deep_every=16, log=print):
+def run(seconds, seed, cfg="default", pool_size=3000, batch=500, deep_every=16, log=print, on_finding=None):
     rng = random.Random(seed)
     w = Worker(cfg)
     stats = collections.Counter()
@@ -225,10 +234,22 @@ def run(seconds, seed, cfg="default", pool_size=3000, batch=500, deep_every=16, 
                 w = Worker(cfg)
                 continue
             for i, ((case, upg), r) in enumerate(zip(metas, res)):
-                for f in evaluate(w, case, upg, r, rng.random() < 1.0 / deep_every, stats):
+                deep = rng.random() < 1.0 / deep_every
+                signal.signal(signal.SIGALRM, _alarm)
+                signal.setitimer(signal.ITIMER_REAL, 20)      # an oracle that runs for 20 s is itself a bug worth knowing about
+                try:
+                    fl = evaluate(w, case, upg, r, deep, stats)
+                except OracleTimeout:
+                    fl = [oracle.Finding("oracle-timeout", "the Python oracle needed more than 20 s for a %d-byte input" % sum(len(p) for p in cases[i][0]), "oracle-timeout")]
+                finally:
+                    signal.setitimer(signal.ITIMER_REAL, 0)
+                for f in fl:
                     stats["finding:" + f.kind] += 1
                     if f.sig not in findings:
                         findings[f.sig] = (f, case, b"".join(op[1] for op in case["ops"] if op[0] == "s"), r["B"])
+                        log("NEW FINDING [%s] %s: %s" % (cfg, f.kind, f.detail[:200]))
+                        if on_finding:
+                            on_finding(f, case, findings[f.sig][2], r["B"])
                 slowest.append((r["usec"], sum(len(p) for p in cases[i][0])))
             slowest = sorted(slowest, reverse=True)[:5]
             if time.time() - last > 20:

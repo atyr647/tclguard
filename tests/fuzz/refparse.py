@@ -15,7 +15,30 @@ import re
 
 TOK = rb"[!#$%&'*+\-.^_`|~0-9A-Za-z]+"
 RE_REQLINE = re.compile(rb"(" + TOK + rb") ([\x21-\x7e\x80-\xff]+) HTTP/([0-9])\.([0-9])")
-RE_HEADER = re.compile(rb"(" + TOK + rb"):[ \t]*([\t\x20-\x7e\x80-\xff]*?)[ \t]*")
+RE_NAME = re.compile(TOK)
+RE_VALUE = re.compile(rb"[\t\x20-\x7e\x80-\xff]*")
+
+
+class _HeaderRe:
+    """field-line = name ":" OWS value OWS, without a lazy regexp (quadratic on long runs of whitespace)."""
+
+    @staticmethod
+    def fullmatch(line):
+        i = line.find(b":")
+        if i < 1 or not RE_NAME.fullmatch(line, 0, i) or not RE_VALUE.fullmatch(line, i + 1):
+            return None
+        return _HM(line[:i], line[i + 1:].strip(b" \t"))
+
+
+class _HM:
+    def __init__(self, n, v):
+        self.n, self.v = n, v
+
+    def group(self, i):
+        return self.n if i == 1 else self.v
+
+
+RE_HEADER = _HeaderRe()
 _CRLF = re.compile(rb"[\r\n]")
 RE_DIGITS = re.compile(rb"[0-9]+")
 _QS = rb'"(?:[\t \x21\x23-\x5b\x5d-\x7e\x80-\xff]|\\[\t \x21-\x7e\x80-\xff])*"'

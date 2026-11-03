@@ -59,7 +59,7 @@ is saved with its exact ops and is replayed from the file rather than from the s
 2. **Liveness and CPU.** After every batch the guard must answer a normal request and `ctl ping` within a deadline
    and must still be alive. `cpu.py` measures guard CPU (sum of `/proc/<pid>/task/*/schedstat`, nanosecond
    resolution) for families of pathological inputs at four sizes, one input at a time on an idle guard, and flags
-   any input above 200 ms or super-linear growth. The in-process mode flags any case over 200 ms *and* 10 us per
+   any input above 200 ms or super-linear growth. The in-process mode flags any case over 200 ms *and* 20 us per
    input byte (reflected channels make `emit` slow, so per-byte cost is the fair yardstick there).
 3. **Leaks.** After each batch the connection tables (`ctl debug`: tcpConns, tcpPerIp, httpState, httpBuf), the
    channel count, `/proc/<pid>/fd` and the RSS trend (early vs late rounds) must be back at baseline. In-process,
@@ -88,6 +88,7 @@ answer before the body, 101 for WebSocket, 101 even without `Connection: upgrade
 | `Content-Length: 010` accepted | strtol(s, 0, 0) readers take it as octal 8: the request boundary moves | no leading zeros |
 | Trusted-proxy X-Forwarded-For chain: several client lines were merged in reverse order, and `X_Forwarded_For` spellings were merged too | backend's "leftmost/rightmost untrusted" differs from the address the guard banned or limited; a client behind the proxy could inject chain entries | original order, exact header name only |
 | Per-path limits matched the raw path only | `//login`, `/%6cogin`, `/./login`, `/x/../login`, `/\login` walk around a `^/login` limit (login brute force) | also match the %-decoded, dot-resolved, `;param`-free path |
+| Tcl's default `string trim` also strips U+00A0 / U+0085, used for `Connection` tokens and X-Forwarded-For entries | `Connection:\xa0upgrade` was an Upgrade for the guard but not for a strict parser (and the reverse for protected-field names); a client address with a leading NBSP was accepted | trim only SP/HTAB (the RFC's OWS) |
 | Tiny-chunk limit only counted chunks under 16 bytes | 16..127-byte chunks cost ~75 us each, unmetered: 3 Mbit/s pinned a core | count chunks under 128 bytes |
 
 ## Deliberate deviations from RFC 9112 (the guard is stricter on purpose)

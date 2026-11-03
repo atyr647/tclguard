@@ -98,14 +98,11 @@ def run_live(lv, a, seconds, outdir):
 def cmd_inproc(a):
     import inproc
     total = 0
-    cfgs = a.variant.split(",") if a.variant != "default" else ["default", "noxff", "trusted"]
+    cfgs = a.variant.split(",") if a.variant != "all" else ["default", "noxff", "trusted"]
     per = a.seconds / len(cfgs)
     for cfg in cfgs:
-        findings, stats = inproc.run(per, a.seed, cfg)
-        for sig, (f, case, sent, got) in sorted(findings.items()):
-            p = save_finding(a.out, "inproc-seed%d" % a.seed, f, case, sent, got, "inproc:" + cfg)
-            print("FINDING %-20s %s\n    %s\n    -> %s" % (f.kind, sig, f.detail[:300], p))
-            total += 1
+        findings, stats = inproc.run(per, a.seed, cfg, on_finding=lambda f, c, s, g, cfg=cfg: print("    saved ->", save_finding(a.out, "inproc-seed%d" % a.seed, f, c, s, g, "inproc:" + cfg), flush=True))
+        total += len(findings)
     return total
 
 
