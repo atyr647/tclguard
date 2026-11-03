@@ -121,6 +121,11 @@ allowed. Listed so nobody "fixes" them by accident.
 * Per-path limits (`pathLimits`) match the path as sent and as normalised (%XX, `\`, `//`, dot segments, `;params`).
   They are case-sensitive (use `(?i)` in the regexp for a case-insensitive backend) and do not double-decode.
 
+* `::tg::ip::parse` (util.tcl) trims with Tcl's default `string trim`, so an X-Forwarded-For entry with a leading
+  NBSP (`\xa0127.0.0.1`) from a trusted proxy is accepted as 127.0.0.1 (the chain forwards the raw text, X-Real-IP
+  is the normalised address). Found by the trusted-proxy identity oracle (`identity-chain`); not fixed because it
+  lives outside the HTTP parser and needs a decision about the other callers of `parse`.
+
 ## Adding a regression
 
 Run the fuzzer, take the JSON from `out/`, `fuzz.py promote out/x.json --name short-name` (minimises against the
