@@ -5,11 +5,17 @@
 set -e
 cd "$(dirname "$0")/.."
 mkdir -p dist
-HOSTKIT=${HOSTKIT:-.tclkit-build-linux/kc/tclkit-8.6.14}   # any tclkit with vfs::mk4
+# The program that runs build.tcl needs Tcl + Metakit (vfs::mk4). By default that is the currently shipped single-file program
+# (`<it> eval build.tcl ...`), so no separate build directory is required; set HOSTKIT to any tclkit to use that instead.
+HOSTKIT=${HOSTKIT:-releases/tclguard-linux-x86_64}
+case "$(basename "$HOSTKIT")" in tclkit*) EVALWORD="" ;; *) EVALWORD="eval" ;; esac
+# (copy it first: the build replaces the file it runs from)
+cp "$HOSTKIT" /tmp/tg-rewrap-host.$$ && chmod +x /tmp/tg-rewrap-host.$$
+trap 'rm -f /tmp/tg-rewrap-host.$$' EXIT
 cd dist
 rm -f tclguard-linux tclguard.exe tclguard-console.exe
-xvfb-run -a "../$HOSTKIT" ../build.tcl --runtime ../tools/runtimes/rt-linux-x86_64 --format mk4 --out tclguard-linux </dev/null 2>&1 | tail -1
-xvfb-run -a "../$HOSTKIT" ../build.tcl --runtime ../tools/runtimes/rt-windows-x86_64.exe --format mk4 --out tclguard.exe </dev/null 2>&1 | tail -1
+xvfb-run -a /tmp/tg-rewrap-host.$$ $EVALWORD ../build.tcl --runtime ../tools/runtimes/rt-linux-x86_64 --format mk4 --out tclguard-linux </dev/null 2>&1 | tail -1
+xvfb-run -a /tmp/tg-rewrap-host.$$ $EVALWORD ../build.tcl --runtime ../tools/runtimes/rt-windows-x86_64.exe --format mk4 --out tclguard.exe </dev/null 2>&1 | tail -1
 python3 - <<'PY'
 import struct
 b = bytearray(open("tclguard.exe", "rb").read())
