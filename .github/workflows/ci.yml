@@ -82,11 +82,17 @@ jobs:
           $exe = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
           pwsh -NoProfile -File tools\ci-bounded.ps1 -Exe $exe -Seconds 90 eval tests\platform\probe.tcl
       - name: Windows platform tests (real netsh, Task Scheduler, netstat)
-        timeout-minutes: 8
+        timeout-minutes: 10
         run: |
           $exe = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
-          pwsh -NoProfile -File tools\ci-bounded.ps1 -Exe $exe -Seconds 240 eval tests\platform\windows_test.tcl
-          if ($LASTEXITCODE -ne 0) { throw "platform tests exit code $LASTEXITCODE" }
+          $failed = @()
+          foreach ($phase in 'facts','netstat','autostart','locations','firewall') {
+            Write-Host "##[group]platform phase: $phase"
+            pwsh -NoProfile -File tools\ci-bounded.ps1 -Exe $exe -Seconds 90 eval tests\platform\windows_test.tcl $phase
+            if ($LASTEXITCODE -ne 0) { $failed += "$phase (exit $LASTEXITCODE)" }
+            Write-Host "##[endgroup]"
+          }
+          if ($failed) { throw "platform phases failed: $($failed -join ', ')" }
       - name: Integration tests against the starpack (real sockets)
         timeout-minutes: 12
         run: |

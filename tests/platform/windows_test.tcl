@@ -1,18 +1,25 @@
+# usage: windows_test.tcl ?phase ...?   (no phases = all). Phases: facts netstat firewall autostart locations
+puts "windows_test: starting"; flush stdout
 source [file join [file dirname [info script]] common.tcl]
+set ::phases [expr {[info exists ::argv] && [llength $::argv] ? $::argv : {facts netstat firewall autostart locations}}]
+proc want {p} { expr {$p in $::phases} }
 puts "Windows platform tests: Tcl [info patchlevel] on $tcl_platform(os) $tcl_platform(osVersion), [info nameofexecutable]"
 
-phase "facts"
 set admin [::tg::fw::isPrivileged]
+if {[want facts]} {
+phase "facts"
 check "administrator detection runs (admin=$admin)" 1
 check "netsh is found" [expr {[::tg::fw::which netsh] ne ""}]
 check "backend 'netsh' is offered" [expr {"netsh" in [::tg::fw::available]}] [::tg::fw::available]
 check "auto picks netsh" [expr {[::tg::fw::choose auto] eq "netsh"}]
 check "platform detected as windows" [expr {[::tg::autostart::platform] eq "windows"}]
-
+}
+if {[want netstat]} {
 phase "netstat"
 lassign [connectionTableSees 28999] hit n
 check "netstat parser finds a live local connection ($n rows seen)" $hit
-
+}
+if {[want firewall]} {
 phase "windows firewall (netsh)"
 if {$admin} {
     freshCfg {firewall netsh allowlist {}}
@@ -40,7 +47,8 @@ if {$admin} {
 } else {
     puts "SKIP firewall tests: not an administrator"
 }
-
+}
+if {[want autostart]} {
 phase "autostart (schtasks)"
 catch {exec schtasks /Delete /TN TclGuard /F}
 check "no autostart task to begin with" [expr {![::tg::autostart::status]}]
@@ -51,9 +59,11 @@ set rc [catch {exec schtasks /Query /TN TclGuard /V /FO LIST} q]
 check "task runs the program with --gui at logon" [expr {!$rc && [string match "*--gui*" $q] && [string match "*logon*" [string tolower $q]]}] $q
 set err [::tg::autostart::disable]
 check "autostart can be removed" [expr {$err eq "" && ![::tg::autostart::status]}] $err
-
+}
+if {[want locations]} {
 phase "locations"
 set h [::tg::cfg::homeDir]
 check "config folder is under %APPDATA% ($h)" [expr {[string match -nocase "*TclGuard" $h]}]
 check "file attributes -permissions does not break saving" [expr {![catch {::tg::cfg::save [file join $::env(TEMP) tg-perm.conf] [::tg::cfg::new]}]}]
+}
 finish
