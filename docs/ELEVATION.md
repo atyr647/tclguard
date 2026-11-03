@@ -28,6 +28,7 @@ macOS runs it as root, whose home folder is different):
 | The password / consent dialog itself | **not testable**: the runner has UAC off | opens and waits for a password on a real runner (checked); a script cannot know the account password, so **not answered** |
 | "I said no" is recognised | wording unit-tested (`macos_elevation_test.tcl`) | same |
 | Root-written files go back to the owner | (not applicable) | `tests/handback.test` as root |
+| The GUI works when run as root (what the macOS dialog produces) | (not applicable) | the 36 GUI flows pass in the Mac starpack run through `sudo` on a real runner |
 
 The honest gap: nobody has yet clicked through the real UAC prompt as a standard user, or typed a real password into the macOS dialog, with this
 code. Everything around those two dialogs is tested on real machines; the dialogs belong to the operating systems.

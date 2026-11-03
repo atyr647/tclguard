@@ -34,7 +34,7 @@ Checked on **real GitHub-hosted runners** (Windows Server 2025 as administrator,
 | Let's Encrypt (ACME) against Pebble | 20 checks, source and starpack | **20 checks, real Windows** | 20 checks |
 | IPv6 end to end | 11 checks | **11 checks** | 11 checks |
 | Single file updates itself from a signed manifest, keeps `.previous`, rolls back | 12 checks, the shipped starpack | **15 checks, real Windows (a helper swaps the file after the exit)** | **13 checks, the Mac starpack updates itself** (+ 53 source checks) |
-| Installer / uninstaller | real systemd unit, self-removal | **user and system scope, shortcuts, Add/Remove Programs, Scheduled Task, deferred self-removal** | plist lint + launchctl with a stand-in program |
+| Installer / uninstaller | real systemd unit, self-removal | **user and system scope, shortcuts, Add/Remove Programs, Scheduled Task, deferred self-removal** | **the Mac starpack installs itself and the installed copy removes itself**; plist lint, launchctl with a stand-in program |
 | Kernel firewall rule install / ban / unban / remove | nftables, real kernel (22 checks) | **Windows Firewall via `netsh`: 2,500 bans over 5 rules** | pf: 18 platform checks |
 | Live connection scan (`netstat`) | `/proc` | **parsed from a real Windows table** | parsed from BSD netstat |
 | Start at sign-in | XDG autostart entry | **Task Scheduler task created, read back, removed** | LaunchAgent |
