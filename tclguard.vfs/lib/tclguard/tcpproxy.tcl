@@ -65,10 +65,14 @@ proc ::tg::tcp::computeMaxTotal {} {
     } elseif {$::tcl_platform(platform) eq "windows"} {
         set fdSoft 2048   ;# Windows has no small fd cap in the C runtime used by Tcl
     }
+    # Tcl 8.6 waits for events with select(), which cannot handle a descriptor numbered FD_SETSIZE (1024) or
+    # more: the whole process aborts ("bit out of range 0 - FD_SETSIZE on fd_set"). Raising the open-files limit
+    # therefore makes things WORSE, not better: whatever the limit says, never plan beyond descriptor ~1000.
+    if {$::tcl_platform(platform) ne "windows" && $fdSoft > 1000} { set fdSoft 1000 }
     set cap [expr {max(16, ($fdSoft - 96) / 2)}]
     if {$want == 0 || $want > $cap} {
         if {$want > $cap} {
-            ::tg::log::warn "maxConnections $want is above what this process can hold ($cap, from the open-files limit [expr {$fdSoft}]); using $cap. Raise it with 'ulimit -n' or LimitNOFILE in systemd."
+            ::tg::log::warn "maxConnections $want is above what one TclGuard process can hold ($cap connections: Tcl's event loop cannot use descriptors above 1023); using $cap."
         }
         set want $cap
     }

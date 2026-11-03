@@ -499,7 +499,7 @@ Wants=network-online.target
 Type=simple
 Environment=TCLGUARD_HOME=$confDir
 ExecStart=[systemdQuote $binPath] --headless --config [systemdQuote $conf]
-LimitNOFILE=65536
+LimitNOFILE=1024
 Restart=on-failure
 RestartSec=3
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE

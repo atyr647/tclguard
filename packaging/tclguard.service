@@ -14,8 +14,9 @@ Wants=network-online.target
 Type=simple
 Environment=TCLGUARD_HOME=/etc/tclguard
 ExecStart=/usr/local/bin/tclguard --headless --config /etc/tclguard/tclguard.conf
-# Every proxied connection needs two file descriptors; the default limit (1024) is far too low.
-LimitNOFILE=65536
+# Do NOT raise this. Tcl 8.6's event loop (select) cannot use descriptors numbered 1024 or more and the whole
+# process aborts if it gets one; TclGuard therefore caps itself at about 450 proxied connections per process.
+LimitNOFILE=1024
 Restart=on-failure
 RestartSec=3
 # Bans live in the kernel with timeouts, so protection continues while we restart.

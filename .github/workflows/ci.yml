@@ -59,6 +59,8 @@ jobs:
           cd tests/integration && python3 -u test_tls.py && python3 -u test_acme.py
       - name: Released starpack - a real starpack updates ITSELF (signed manifest, local HTTPS, rollback)
         run: cd tests/integration && python3 -u test_update_starpack.py
+      - name: Released starpack - survives more connections than select() can watch (FD_SETSIZE)
+        run: cd tests/integration && TG_CMD="$PWD/../../releases/tclguard-linux-x86_64" python3 -u test_fdlimit.py
 
   # ---------------------------------------------------------------- Windows ----
   windows:

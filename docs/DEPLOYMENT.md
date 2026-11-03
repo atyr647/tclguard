@@ -59,7 +59,7 @@ Only trust addresses you know belong to the CDN, and make sure the origin port i
 
 ## Systemd (Linux)
 
-See `packaging/tclguard.service`. Raise `LimitNOFILE` (each proxied connection uses two descriptors).
+See `packaging/tclguard.service`. Leave `LimitNOFILE` at 1024: Tcl 8.6's event loop cannot use file descriptors numbered 1024 or higher (the process would abort), so raising the limit makes TclGuard *less* safe. One process holds about 450 proxied connections (two descriptors each); beyond that, new connections are refused at the global cap rather than crashing.
 
 ## Windows
 
