@@ -42,8 +42,6 @@ jobs:
       - name: Real-kernel nftables tests
         run: sudo python3 tests/kernel/run_kernel_tests.py
       - name: Installer with real systemd (needs a starpack built from this source tree)
-        # Turn continue-on-error off once the committed starpacks contain install.tcl/update.tcl.
-        continue-on-error: true
         run: |
           chmod +x releases/tclguard-linux-x86_64
           sudo -E ./releases/tclguard-linux-x86_64 eval tests/platform/linux_install_test.tcl
@@ -112,8 +110,6 @@ jobs:
           }
           if ($failed) { throw "platform phases failed: $($failed -join ', ')" }
       - name: Windows installer tests (shortcuts, Add/Remove Programs, Scheduled Task, running .exe, self-delete)
-        # Turn continue-on-error off once the committed starpacks contain install.tcl/update.tcl.
-        continue-on-error: true
         timeout-minutes: 15
         run: |
           $exe = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
