@@ -19,19 +19,29 @@ Windows: double-click `tclguard-windows-x86_64.exe`. For the Windows Firewall in
 
 ## What has and has not been verified
 
-| | Linux | Windows |
-|---|---|---|
-| Starts, `version` | yes | yes (under Wine) |
-| `selftest` (15 live-attack checks incl. UDP relay) | yes, native | yes, **under Wine only** (both .exe variants) |
-| GUI renders | yes, native (Xvfb) | yes, **under Wine only** |
-| Headless daemon + `ctl`, kernel firewall install/remove | yes, native | not tested |
-| Windows Firewall (`netsh`) integration | n/a | **not tested on real Windows** |
+Checked on **real GitHub-hosted runners** (Windows Server 2025 as administrator, macOS on Apple Silicon, Ubuntu) by
+`.github/workflows/ci.yml`, and under Wine / Xvfb during development.
 
-Wine is a compatibility layer, not Windows. The Windows binary is built and smoke-tested, not field-tested.
+| | Linux | Windows | macOS |
+|---|---|---|---|
+| Starpack in this folder | yes | yes (both .exe) | none shipped (see below) |
+| `selftest` (15 live-attack checks incl. UDP relay) | yes | **yes, real Windows** | yes (from source) |
+| Unit tests (config, bans, firewall command logic, monitor parser, autostart) | yes | **yes, run by the Tcl inside the starpack** | yes |
+| Integration: real sockets, 48 HTTP + 57 feature checks incl. UDP, WebSocket, PROXY protocol | yes | **yes, against the Windows starpack** | yes |
+| Kernel firewall rule install / ban / unban / remove | nftables, real kernel (22 checks) | **Windows Firewall via `netsh`, real rule lifecycle** | pf: 18 platform checks |
+| Live connection scan (`netstat`) | `/proc` | **parsed from a real Windows table** | parsed from BSD netstat |
+| Start at sign-in | XDG autostart entry | **Task Scheduler task created, read back, removed** | LaunchAgent |
+| GUI | Xvfb | **26 scripted flows on a real desktop** | 27 under Aqua |
+
+macOS has no starpack here: a macOS Tk kit has to be built on a Mac. It runs from source with Homebrew's Tcl/Tk 8.6 and
+tcludp (see `docs/DEPLOYMENT.md`), which is what the macOS runner tests.
+
+Not verified anywhere: behaviour under a real multi-gigabit flood, IPv6 end to end, the "Restart as administrator" UAC /
+osascript prompts (they need a person to click), and real-world uptime.
 
 The plain Windows executable uses the GUI subsystem (no console window), so command-line output does not appear in
 Command Prompt. Use `tclguard-windows-x86_64-console.exe` for command-line work (it is the same file with one PE header
-field changed, subsystem 2 -> 3; it passes the same self-test under Wine). Run `tclguard-windows-x86_64-console.exe --gui`
+field changed, subsystem 2 -> 3; it passes the same self-test on real Windows). Run `tclguard-windows-x86_64-console.exe --gui`
 if you want the window plus a console.
 
 Linux runtime note: dynamically linked against glibc 2.39 (built on Ubuntu 24.04) and X11 for the GUI.

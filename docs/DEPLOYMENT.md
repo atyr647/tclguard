@@ -63,4 +63,23 @@ See `packaging/tclguard.service`. Raise `LimitNOFILE` (each proxied connection u
 
 ## Windows
 
-Run `tclguard.exe` as Administrator for the Windows Firewall integration. To start at boot, use Task Scheduler ("Run with highest privileges", trigger "At startup", action `tclguard.exe --headless --config C:\ProgramData\TclGuard\tclguard.conf`).
+No Command Prompt is needed. Double-click `tclguard-windows-x86_64.exe`:
+
+* **Restart as administrator** (banner on the Overview page, button on the Firewall page) re-launches it elevated so the Windows Firewall integration works. Windows asks once.
+* **Settings -> Start TclGuard when I sign in** creates a Scheduled Task that runs it at logon with highest privileges.
+* **Settings -> Open data folder** opens the config and logs in Explorer; **Help -> Run self-test** shows the attack simulation in a window.
+
+The plain `.exe` has no console window. Use `tclguard-windows-x86_64-console.exe` if you want `tclguard ctl status` style output in a terminal, or for headless servers:
+`tclguard-windows-x86_64-console.exe --headless` (Task Scheduler: trigger "At startup", run with highest privileges).
+
+## macOS
+
+There is no macOS starpack yet (a Tk kit for macOS has to be built on a Mac with `tools/build-tclkit.sh`). From source:
+
+```sh
+brew install tcl-tk@8                      # Tcl/Tk 8.6 (the system one is 8.5)
+# tcludp is needed for UDP game relays: build it from https://sourceforge.net/projects/tcludp/
+/opt/homebrew/opt/tcl-tk@8/bin/wish8.6 tclguard.vfs/main.tcl
+```
+
+Bans go into a `pf` table under the `com.apple/tclguard` anchor (needs root; the app offers *Restart as administrator*). *Start TclGuard when I sign in* installs a LaunchAgent.
