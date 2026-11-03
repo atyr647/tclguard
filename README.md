@@ -67,7 +67,8 @@ A systemd unit is in [packaging/tclguard.service](packaging/tclguard.service); `
 * **UDP needs the `udp` extension** (tcludp). The game server sees every player as `127.0.0.1` (the relay's upstream socket); per-player IP bans inside the game won't work through a UDP relay.
 * **HTTPS** can be terminated by TclGuard itself (your own certificate, a self-signed one, or automatic Let's Encrypt certificates over HTTP-01), so the full HTTP inspection applies to HTTPS too: [docs/TLS.md](docs/TLS.md). One certificate per listener (tcltls has no server-side SNI). `tcp` listeners can still pass TLS through untouched. HTTP-01 needs port 80 reachable from the internet; wildcard certificates (DNS-01) are not supported.
 * **IPv6** (`bind ::`, per-/64 bans, UDP over IPv6, PROXY protocol) is tested end to end with real sockets on Linux, **real Windows and real macOS** (11 checks). On Windows `bind ::` is IPv6-only, so a site that must answer both families needs two listeners (`0.0.0.0` and `::`).
-* **Windows and macOS** are tested on real GitHub runners (see Verification), not on years of home setups. The Windows starpack passes the self-test, the integration suites, TLS termination and Let's Encrypt issuance against a test CA, a real `netsh` firewall lifecycle (2,500 bans spread over 5 rules), Task Scheduler autostart, the GUI flows, and it **updates itself and rolls back** on a real Windows machine (a running Windows starpack cannot be renamed, so a small helper swaps the file once the program has exited: [docs/UPDATES.md](docs/UPDATES.md)). macOS runs from source (no starpack yet) and passes the same suites with `pf` as its firewall; TLS on macOS needs tcltls 2.0.1 or newer, because 1.7.x crashes there ([docs/TLS.md](docs/TLS.md)). The UAC / macOS password prompts for *Restart as administrator* need a human and are untested. Linux has the deepest testing (real-kernel nftables, real systemd).
+* **Windows and macOS** are tested on real GitHub runners (see Verification), not on years of home setups. **Both ship as single files** (`releases/`: Windows x86-64, macOS arm64 and Intel, the latter built on Mac runners by `.github/workflows/runtime-macos.yml`). Each passes the self-test, the integration suites, TLS termination and Let's Encrypt issuance against a test CA, its kernel-firewall tests (`netsh` with 2,500 bans over 5 rules; `pf`), the GUI flows, and it **updates itself and rolls back** on the real machine (a running Windows starpack cannot be renamed, so a small helper swaps the file once the program has exited: [docs/UPDATES.md](docs/UPDATES.md)). The Windows UAC path (`Restart as administrator`) is tested end to end on a real runner; on macOS the AppleScript, the root path and the GUI-as-root are tested, but **nobody has typed a password into the real dialogs yet**: [docs/ELEVATION.md](docs/ELEVATION.md). The programs are not signed with a paid developer certificate, so SmartScreen and Gatekeeper ask once (same document). Linux has the deepest testing (real-kernel nftables, real systemd).
+* **Windows is the slow platform.** Under the same flood test one Windows core serves about 1,000 HTTP requests/s (Linux and macOS: about 5,000) and accepts only a few hundred new connections per second, because Tcl's Windows event loop passes every event through a helper thread. When the connection flood outruns that, the operating system *refuses* new connections before the guard sees them (the guard cannot ban what it never sees), and a mixed attack starved ordinary visitors completely in the test. The Windows Firewall bans (administrator, `netsh`) help once an address is banned. For anything beyond a hobby audience on Windows, use the VPS/CDN setup: [docs/LOAD.md](docs/LOAD.md).
 * **Kernel hardening** drops *all* IP fragments and invalid-state packets, and rate-limits ICMP. Disable those options (Settings / config) if you run something that relies on them (some VPNs, VoIP).
 
 ## Verification
@@ -95,13 +96,14 @@ An independent review of the HTTP/TCP/UDP/firewall/control code found, and this 
 
 ## Getting and building the starpack
 
-**Prebuilt single-file starpacks are in [`releases/`](releases/)** (Linux x86-64 and Windows x86-64, about 5-6 MB each, Tcl + Tk + UDP + TclGuard in one file; see `releases/README.md` for exactly what was verified on each platform and `SHA256SUMS` to check them).
+**Prebuilt single-file starpacks are in [`releases/`](releases/)** (Linux x86-64, Windows x86-64, macOS arm64 and macOS Intel, about 9-12 MB each, Tcl + Tk + UDP + TLS + TclGuard in one file; see `releases/README.md` for exactly what was verified on each platform and `SHA256SUMS` to check them).
 
 To build your own:
 
 ```sh
 tools/build-tclkit.sh linux        # ~15 min: builds a tclkit with Tk, tcludp, Thread, Metakit (KitCreator)
 tools/build-tclkit.sh win64        # cross-compile for Windows (needs mingw-w64)
+tools/build-tclkit.sh macos        # native, on a Mac (arm64 or Intel); CI does it: .github/workflows/runtime-macos.yml
 cp .tclkit-build-linux/kc/tclkit-8.6.14 /tmp/rt     # wrap using a COPY of the runtime
 make starpack RUNTIME=/tmp/rt                       # -> dist/tclguard
 ```
