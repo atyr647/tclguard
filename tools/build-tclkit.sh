@@ -11,12 +11,18 @@
 #
 #   tools/build-tclkit.sh linux     -> tclkit-8.6.14 (native, x86_64)
 #   tools/build-tclkit.sh win64     -> tclkit-8.6.14 (Windows x86_64 .exe, cross-compiled with mingw-w64)
+#   tools/build-tclkit.sh macos     -> tclkit-8.6.14 (macOS, native: arm64 or x86_64 depending on the machine; Tk is Aqua)
+#                                      needs Xcode command line tools and `brew install autoconf automake libtool gnu-sed`
 #
 # Needs: gcc make autoconf, X11/Xft dev headers (libx11-dev libxft-dev libxext-dev libxss-dev),
 # curl, tar; for win64 also gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 and an existing native tclkit
 # (pass its path in TCLKIT; build the linux one first). Takes ~15 minutes per target.
 set -euo pipefail
 target=${1:-linux}
+# portability helpers: this script also runs on macOS (BSD sed, no sha256sum/nproc)
+sedi() { if sed --version >/dev/null 2>&1; then sed -i "$@"; else sed -i '' "$@"; fi; }
+sha256check() { if command -v sha256sum >/dev/null 2>&1; then sha256sum -c -; else shasum -a 256 -c -; fi; }
+ncpu() { nproc 2>/dev/null || sysctl -n hw.ncpu; }
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 work=${WORK:-$PWD/.tclkit-build-$target}
 mkdir -p "$work" && cd "$work"
@@ -29,7 +35,7 @@ cd kc
 # GitHub release publish the same SHA-256 for the OpenSSL tarball.
 OPENSSL_VERSION=3.5.9
 OPENSSL_SHA256=603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a
-sed -i \
+sedi \
   -e 's/^version="1.7.19"/version="1.7.22"/' \
   -e 's#^url=.*#url="https://core.tcl-lang.org/tcltls/uv/tcltls-${version}.tar.gz"#' \
   -e "s/^sha256=.*/sha256='e84e2b7a275ec82c4aaa9d1b1f9786dbe4358c815e917539ffe7f667ff4bc3b4'/" \
@@ -37,20 +43,21 @@ sed -i \
   -e '/libtcl86.a/d' \
   tls/build.sh
 # On Windows tcltls links the Tcl library by bare file name (libtcl86.a); make it findable from the build directory.
-sed -i 's#^function preconfigure() {#function preconfigure() {\n\tcp "${pkgdir}/../tcl/inst/lib/libtcl86.a" . 2>/dev/null || true#' tls/build.sh
+sedi 's#^function preconfigure() {#function preconfigure() {\n\tcp "${pkgdir}/../tcl/inst/lib/libtcl86.a" . 2>/dev/null || true#' tls/build.sh
 cd "$work"
 inst="$work/openssl-inst"
 if [ ! -f "$inst/lib/libssl.a" ]; then
   curl -fsSL -o openssl.tar.gz "https://www.openssl.org/source/openssl-$OPENSSL_VERSION.tar.gz"
-  echo "$OPENSSL_SHA256  openssl.tar.gz" | sha256sum -c -
+  echo "$OPENSSL_SHA256  openssl.tar.gz" | sha256check
   rm -rf "openssl-$OPENSSL_VERSION" && tar xzf openssl.tar.gz
   ( cd "openssl-$OPENSSL_VERSION"
     case $target in
       linux) cfg="linux-x86_64" ;;
       win64) cfg="mingw64 --cross-compile-prefix=x86_64-w64-mingw32-" ;;
+      macos) case "$(uname -m)" in arm64) cfg="darwin64-arm64-cc" ;; *) cfg="darwin64-x86_64-cc" ;; esac ;;
     esac
     ./Configure $cfg no-shared no-tests no-docs no-apps --prefix="$inst" --libdir=lib >/dev/null
-    make -j"$(nproc)" >/dev/null && make install_sw >/dev/null )
+    make -j"$(ncpu)" >/dev/null && make install_sw >/dev/null )
 fi
 cd kc
 export KC_TLS_SSLDIR="$inst/lib/pkgconfig"
@@ -61,13 +68,14 @@ bash build/pre.sh >/dev/null 2>&1 || true
 export KITCREATOR_PKGS='tk itcl mk4tcl udp tls'
 case $target in
   linux) ./kitcreator 8.6.14 --enable-64bit ;;
+  macos) ./kitcreator 8.6.14 --enable-64bit ;;
   win64)
     : "${TCLKIT:?set TCLKIT to a native tclkit (the linux one built above)}"
     export TCLKIT PKG_CONFIG_LIBDIR=/usr/x86_64-w64-mingw32/lib/pkgconfig
     AR=x86_64-w64-mingw32-ar CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++ \
     RANLIB=x86_64-w64-mingw32-ranlib RC=x86_64-w64-mingw32-windres STRIP=x86_64-w64-mingw32-strip \
       ./kitcreator 8.6.14 --host=x86_64-w64-mingw32 --enable-64bit ;;
-  *) echo "usage: $0 linux|win64"; exit 2 ;;
+  *) echo "usage: $0 linux|win64|macos"; exit 2 ;;
 esac
 ls -la tclkit-8.6.14
 echo "Then:  <native tclkit> build.tcl --runtime <COPY of the tclkit> --format mk4 --out tclguard[.exe]"

@@ -1,0 +1,69 @@
+name: runtime-macos
+
+# Builds the macOS Tcl/Tk runtime (a "tclkit") with tools/build-tclkit.sh on real Mac runners, wraps the TclGuard
+# starpack on it and runs it. Slow (about 20-30 minutes), so it runs only when the build script or this file changes,
+# or by hand. The runtime and the starpack are uploaded as artifacts; commit them as tools/runtimes/rt-macos-<arch> and
+# releases/tclguard-macos-<arch> (see releases/README.md).
+on:
+  push:
+    paths:
+      - '.github/workflows/runtime-macos.yml'
+      - 'tools/build-tclkit.sh'
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: arm64,  runner: macos-latest }
+          - { arch: x86_64, runner: macos-15-intel }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build tools
+        run: |
+          brew install autoconf automake libtool gnu-sed coreutils
+          echo "$(brew --prefix gnu-sed)/libexec/gnubin" >> "$GITHUB_PATH"
+          uname -m; sw_vers; xcode-select -p; clang --version | head -1
+      - name: Build the runtime (Tcl 8.6.14, Tk Aqua, udp, tls with static OpenSSL, Metakit)
+        run: |
+          export WORK="$RUNNER_TEMP/kcwork"
+          tools/build-tclkit.sh macos 2>&1 | tee "$RUNNER_TEMP/build.log" | tail -n 60
+          test -x "$WORK/kc/tclkit-8.6.14"
+      - name: Show what we built
+        if: ${{ !cancelled() }}
+        run: |
+          kit="$RUNNER_TEMP/kcwork/kc/tclkit-8.6.14"
+          ls -la "$kit" || true
+          file "$kit" || true
+          otool -L "$kit" || true
+          codesign -dv "$kit" 2>&1 || true
+          "$kit" <<< 'puts [info patchlevel]; puts [package require Tk]; puts [package require udp]; puts [package require tls]; puts [tls::version]; puts [package require vfs::mk4]' || true
+      - name: Wrap the TclGuard starpack on it
+        run: |
+          kit="$RUNNER_TEMP/kcwork/kc/tclkit-8.6.14"
+          mkdir -p out
+          cp "$kit" out/rt-macos-${{ matrix.arch }}            # a COPY: a running kit mounts itself as a virtual folder
+          "$kit" build.tcl --runtime out/rt-macos-${{ matrix.arch }} --format mk4 --out out/tclguard-macos-${{ matrix.arch }}
+          chmod +x out/tclguard-macos-${{ matrix.arch }}
+          ls -la out
+      - name: Does the starpack start? (no re-signing yet)
+        run: |
+          out/tclguard-macos-${{ matrix.arch }} version
+          out/tclguard-macos-${{ matrix.arch }} selftest 2>&1 | tail -5
+      - name: What the signature looks like
+        if: ${{ !cancelled() }}
+        run: |
+          codesign -dv out/tclguard-macos-${{ matrix.arch }} 2>&1 || true
+          codesign --verify --verbose=2 out/tclguard-macos-${{ matrix.arch }} 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: macos-${{ matrix.arch }}
+          path: |
+            out/*
+            ${{ runner.temp }}/build.log
+          if-no-files-found: warn
