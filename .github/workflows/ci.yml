@@ -40,6 +40,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: cd tests/integration && python3 -u test_tls.py
       - uses: actions/setup-go@v5
+        if: ${{ !cancelled() }}
         with:
           go-version: stable
       - name: Build Pebble (Let's Encrypt's ACME test server)
@@ -54,6 +55,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: sudo python3 tests/kernel/run_kernel_tests.py
       - name: Installer with real systemd (needs a starpack built from this source tree)
+        if: ${{ !cancelled() }}
         run: |
           chmod +x releases/tclguard-linux-x86_64
           sudo -E ./releases/tclguard-linux-x86_64 eval tests/platform/linux_install_test.tcl
@@ -139,6 +141,7 @@ jobs:
         shell: pwsh
         run: powershell -NoProfile -File tests/platform/windows_lock_probe.ps1 "$PWD\releases\tclguard-windows-x86_64-console.exe"
       - name: Windows installer tests (shortcuts, Add/Remove Programs, Scheduled Task, running .exe, self-delete)
+        if: ${{ !cancelled() }}
         timeout-minutes: 15
         run: |
           $exe = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
@@ -169,6 +172,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "IPv6 tests failed" }
           Pop-Location
       - uses: actions/setup-go@v5
+        if: ${{ !cancelled() }}
         with:
           go-version: stable
       - name: TLS termination and automatic certificates (starpack, real Windows)
@@ -274,6 +278,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: sudo -E $TCLSH tests/platform/macos_test.tcl
       - name: macOS installer tests (plist lint, launchctl, stand-in program; no starpack exists)
+        if: ${{ !cancelled() }}
         run: sudo -E $TCLSH tests/platform/macos_install_test.tcl
       - name: Signed-update integration test (local HTTPS server)
         if: ${{ !cancelled() }}
@@ -295,6 +300,10 @@ jobs:
           $TCLSH <<< 'puts "tls: [package require tls] [tls::version]"'
           export TG_CMD="$TCLSH $PWD/tclguard.vfs/main.tcl"
           cd tests/integration && python3 -u test_tls.py
+      - uses: actions/setup-go@v5
+        if: ${{ !cancelled() }}
+        with:
+          go-version: stable
       - name: Automatic certificates (ACME) against Pebble
         if: ${{ !cancelled() }}
         run: |

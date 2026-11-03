@@ -492,7 +492,7 @@ test inst-win-ps-quoting {PowerShell strings survive quotes, typographic quotes 
          [lrange $argv 0 7] [expr {[lsearch -exact $argv -WindowStyle] >= 0}]
 } -result {'a''b' 1 1 {powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand} 1}
 
-test inst-win-plan {Windows plan shows folder, shortcuts, Add/Remove entry and the task} -setup {
+test inst-win-plan {Windows plan shows folder, shortcuts, Add/Remove entry and the task} -constraints unix -setup {
     set d [winSandbox]
     set ::tg::install::elevatedOverride 1
 } -body {
@@ -503,7 +503,7 @@ test inst-win-plan {Windows plan shows folder, shortcuts, Add/Remove entry and t
          [string match "*Scheduled Task 'TclGuard'*" $steps]
 } -result {1 1 1 1 1}
 
-test inst-win-system-install {system install: commands for registry, shortcut and task use the installed path} -setup {
+test inst-win-system-install {system install: commands for registry, shortcut and task use the installed path} -constraints unix -setup {
     set d [winSandbox]
     set ::tg::install::elevatedOverride 1
 } -body {
@@ -527,7 +527,7 @@ test inst-win-system-install {system install: commands for registry, shortcut an
     {HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\TclGuard} 2 1 1 1 1 \
     {dir binary file file regkey fwrule autostart}]
 
-test inst-win-user-install {user install goes under LOCALAPPDATA\Programs and HKCU, and needs no administrator} -setup {
+test inst-win-user-install {user install goes under LOCALAPPDATA\Programs and HKCU, and needs no administrator} -constraints unix -setup {
     set d [winSandbox]
 } -body {
     set e [::tg::install::run {scope user}]
@@ -537,7 +537,7 @@ test inst-win-user-install {user install goes under LOCALAPPDATA\Programs and HK
          [expr {[lsearch -glob [lmap it [dict get [record $d/AppData/Local/Programs/TclGuard/install.json] items] {dict get $it type}] fwrule] < 0}]
 } -result {{} 1 {HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\TclGuard} 1 1}
 
-test inst-win-shortcut-folder-from-windows {the real Start Menu folder is asked from Windows, with an environment fallback} -setup {
+test inst-win-shortcut-folder-from-windows {the real Start Menu folder is asked from Windows, with an environment fallback} -constraints unix -setup {
     set d [winSandbox]
     set ::rcFor [list [list {powershell *} 0 "$d/Redirected/Start Menu/Programs\r\n"]]
     set ::tg::install::pathStyleOverride unix
@@ -548,7 +548,7 @@ test inst-win-shortcut-folder-from-windows {the real Start Menu folder is asked 
          [string match "*GetFolderPath('Programs')*" [::tg::install::psDecode [lindex $::cmds 0]]]
 } -result {1 1}
 
-test inst-win-replace {installing a newer program over an installed one that nobody runs replaces it directly} -setup {
+test inst-win-replace {installing a newer program over an installed one that nobody runs replaces it directly} -constraints unix -setup {
     set d [winSandbox]
     ::tg::install::run {scope user}
     set bin $d/AppData/Local/Programs/TclGuard/tclguard.exe
@@ -558,7 +558,7 @@ test inst-win-replace {installing a newer program over an installed one that nob
     list $e [readBytes $bin] [file exists $bin.old] [llength [glob -nocomplain $bin.new*]]
 } -result "{} {MZ fake exe version 2 (bigger)\n} 0 0"
 
-test inst-win-replace-running {when Windows refuses the replacement (the installed copy is running) the message says why and the old program stays} -setup {
+test inst-win-replace-running {when Windows refuses the replacement (the installed copy is running) the message says why and the old program stays} -constraints unix -setup {
     set d [winSandbox]
     ::tg::install::run {scope user}
     set bin $d/AppData/Local/Programs/TclGuard/tclguard.exe
@@ -568,7 +568,7 @@ test inst-win-replace-running {when Windows refuses the replacement (the install
     list $e [string match "*is in use*a TclGuard started from it is running*Close TclGuard*" $msg] [readBytes $bin]
 } -result "1 1 {MZ fake exe\n}"
 
-test inst-win-uninstall-running {uninstalling from the installed exe defers its deletion to a detached hidden helper} -setup {
+test inst-win-uninstall-running {uninstalling from the installed exe defers its deletion to a detached hidden helper} -constraints unix -setup {
     set d [winSandbox]
     ::tg::install::run {scope user service yes}
     set base $d/AppData/Local/Programs/TclGuard
@@ -587,7 +587,7 @@ test inst-win-uninstall-running {uninstalling from the installed exe defers its 
          [file exists $base/tclguard.exe.old] [file exists $base/tclguard.exe.previous]
 } -result [list {} 1 powershell 1 1 0 1 1 1 1 0 {{schtasks /Delete /TN TclGuard /F}} {HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\TclGuard} 1 0 0]
 
-test inst-win-uninstall-other-copy {uninstalling from a different copy deletes the files directly and needs no helper} -setup {
+test inst-win-uninstall-other-copy {uninstalling from a different copy deletes the files directly and needs no helper} -constraints unix -setup {
     set d [winSandbox]
     ::tg::install::run {scope user}
     set base $d/AppData/Local/Programs/TclGuard
@@ -599,7 +599,7 @@ test inst-win-uninstall-other-copy {uninstalling from a different copy deletes t
     list $e [llength $::spawned] [file exists $base] [rel $d [tree $d/AppData/Roaming/TclGuard]] [cmdsMatching {netsh *}]
 } -result {{} 0 0 AppData/Roaming/TclGuard/other.txt {}}
 
-test inst-win-uninstall-firewall-rule {a system uninstall deletes the Windows Firewall rule TclGuard created} -setup {
+test inst-win-uninstall-firewall-rule {a system uninstall deletes the Windows Firewall rule TclGuard created} -constraints unix -setup {
     set d [winSandbox]
     set ::tg::install::elevatedOverride 1
     ::tg::install::run {scope system}
@@ -609,7 +609,7 @@ test inst-win-uninstall-firewall-rule {a system uninstall deletes the Windows Fi
     list $e [cmdsMatching {netsh *}]
 } -result {{} {{netsh advfirewall firewall delete rule {name=TclGuard Bans}}}}
 
-test inst-win-uninstall-reg-guard {only uninstall entries can be removed from the registry through the record} -setup {
+test inst-win-uninstall-reg-guard {only uninstall entries can be removed from the registry through the record} -constraints unix -setup {
     set d [winSandbox]
     ::tg::install::run {scope user}
     set rec $d/AppData/Local/Programs/TclGuard/install.json
@@ -622,14 +622,14 @@ test inst-win-uninstall-reg-guard {only uninstall entries can be removed from th
     list [string match "*not an uninstall entry*" $e] [llength [cmdsMatching {*Classes*}]]
 } -result {1 0}
 
-test inst-win-refuses-system-without-admin {a Windows system install without administrator rights is refused} -setup {
+test inst-win-refuses-system-without-admin {a Windows system install without administrator rights is refused} -constraints unix -setup {
     set d [winSandbox]
 } -body {
     set e [::tg::install::run {scope system}]
     list [string match "*administrator*" $e] [llength $::cmds] [llength [glob -nocomplain $d/PF/*]]
 } -result {1 0 0}
 
-test inst-win-task-failure {a failing Scheduled Task is reported, and the program stays installed and recorded} -setup {
+test inst-win-task-failure {a failing Scheduled Task is reported, and the program stays installed and recorded} -constraints unix -setup {
     set d [winSandbox]
     set ::rcFor {{{schtasks *} 1 {ERROR: Access is denied.}}}
 } -body {

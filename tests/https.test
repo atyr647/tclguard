@@ -76,5 +76,9 @@ test json-quote {quote() output parses back} -body {
     expr {[::tg::json::parse [::tg::json::quote $s]] eq $s}
 } -result 1
 
-if {!$::skip} { catch {exec kill [pid $srv]}; catch {close $srv} }
+if {!$::skip} {
+    # (on Windows closing a pipe waits for the child, and `kill` does not exist there)
+    if {$::tcl_platform(platform) eq "windows"} { catch {exec taskkill /F /PID [pid $srv]} } else { catch {exec kill [pid $srv]} }
+    catch {close $srv}
+}
 cleanupTests

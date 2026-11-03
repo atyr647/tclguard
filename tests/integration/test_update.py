@@ -103,6 +103,9 @@ class H(BaseHTTPRequestHandler):
                 self.connection.shutdown(socket.SHUT_RDWR)
             elif kind == "stream":        # more data than anybody asked for
                 total = spec[1]
+                # a small send buffer, or a machine with large loopback buffers (macOS) swallows all 30 MB before the client's abort arrives
+                try: self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
+                except OSError: pass
                 self.send_response(200); self.send_header("Content-Length", str(total)); self.send_header("Connection", "close"); self.end_headers()
                 chunk = b"A" * 65536; sent = 0
                 while sent < total:
