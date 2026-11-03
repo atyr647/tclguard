@@ -55,6 +55,8 @@ jobs:
         run: |
           export TG_CMD="$PWD/releases/tclguard-linux-x86_64"
           cd tests/integration && python3 -u test_tls.py && python3 -u test_acme.py
+      - name: Released starpack - a real starpack updates ITSELF (signed manifest, local HTTPS, rollback)
+        run: cd tests/integration && python3 -u test_update_starpack.py
 
   # ---------------------------------------------------------------- Windows ----
   windows:
@@ -153,6 +155,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "TLS tests failed" }
           python -u test_acme.py
           if ($LASTEXITCODE -ne 0) { throw "ACME tests failed" }
+          Pop-Location
+      - name: A real Windows starpack updates ITSELF (rename-over-running exe, signed manifest, rollback)
+        timeout-minutes: 15
+        run: |
+          $env:PATH = "C:\Program Files\Git\usr\bin;$env:PATH"      # openssl.exe
+          $env:TG_STARPACK = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
+          Push-Location tests\integration
+          python -u test_update_starpack.py
+          if ($LASTEXITCODE -ne 0) { throw "starpack self-update test failed" }
           Pop-Location
       - name: GUI smoke test inside the starpack
         timeout-minutes: 6

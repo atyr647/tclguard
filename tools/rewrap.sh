@@ -1,14 +1,15 @@
 #!/bin/sh
-# Re-wrap the current source tree into the three release binaries using the runtimes
-# kept in dist/ (rt-linux, rt-win64.exe; build them with tools/build-tclkit.sh).
+# Re-wrap the current source tree into the three release binaries using the raw Tcl runtimes kept in
+# tools/runtimes/ (build new ones with tools/build-tclkit.sh and copy them there).
 # The Windows console build is the same file with the PE subsystem changed 2 -> 3.
 set -e
 cd "$(dirname "$0")/.."
+mkdir -p dist
 HOSTKIT=${HOSTKIT:-.tclkit-build-linux/kc/tclkit-8.6.14}   # any tclkit with vfs::mk4
 cd dist
 rm -f tclguard-linux tclguard.exe tclguard-console.exe
-xvfb-run -a "../$HOSTKIT" ../build.tcl --runtime rt-linux --format mk4 --out tclguard-linux </dev/null 2>&1 | tail -1
-xvfb-run -a "../$HOSTKIT" ../build.tcl --runtime rt-win64.exe --format mk4 --out tclguard.exe </dev/null 2>&1 | tail -1
+xvfb-run -a "../$HOSTKIT" ../build.tcl --runtime ../tools/runtimes/rt-linux-x86_64 --format mk4 --out tclguard-linux </dev/null 2>&1 | tail -1
+xvfb-run -a "../$HOSTKIT" ../build.tcl --runtime ../tools/runtimes/rt-windows-x86_64.exe --format mk4 --out tclguard.exe </dev/null 2>&1 | tail -1
 python3 - <<'PY'
 import struct
 b = bytearray(open("tclguard.exe", "rb").read())
