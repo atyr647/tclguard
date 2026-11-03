@@ -57,6 +57,7 @@ jobs:
             if ($actual -ne $hash) { throw "checksum mismatch for $name" } else { "ok  $name" }
           }
       - name: Starpack - version and self-test (console build)
+        timeout-minutes: 6
         run: |
           .\releases\tclguard-windows-x86_64-console.exe version
           .\releases\tclguard-windows-x86_64-console.exe selftest
@@ -72,8 +73,10 @@ jobs:
           }
           if ($failed) { throw "$failed unit test file(s) failed" }
       - name: Windows platform tests (real netsh, Task Scheduler, netstat)
+        timeout-minutes: 6
         run: .\releases\tclguard-windows-x86_64-console.exe eval tests\platform\windows_test.tcl
       - name: Integration tests against the starpack (real sockets)
+        timeout-minutes: 12
         run: |
           $env:TG_CMD = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
           Push-Location tests\integration
@@ -81,6 +84,7 @@ jobs:
           python -u test_features.py
           Pop-Location
       - name: GUI smoke test inside the starpack
+        timeout-minutes: 6
         run: .\releases\tclguard-windows-x86_64-console.exe eval tests\gui\smoke.tcl
       - name: GUI screenshot (real Windows desktop)
         continue-on-error: true

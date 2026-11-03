@@ -1,7 +1,7 @@
 source [file join [file dirname [info script]] common.tcl]
 puts "Windows platform tests: Tcl [info patchlevel] on $tcl_platform(os) $tcl_platform(osVersion), [info nameofexecutable]"
 
-# ---- facts the code relies on ----
+phase "facts"
 set admin [::tg::fw::isPrivileged]
 check "administrator detection runs (admin=$admin)" 1
 check "netsh is found" [expr {[::tg::fw::which netsh] ne ""}]
@@ -9,11 +9,11 @@ check "backend 'netsh' is offered" [expr {"netsh" in [::tg::fw::available]}] [::
 check "auto picks netsh" [expr {[::tg::fw::choose auto] eq "netsh"}]
 check "platform detected as windows" [expr {[::tg::autostart::platform] eq "windows"}]
 
-# ---- the connection table: real `netstat` output parsed ----
+phase "netstat"
 lassign [connectionTableSees 28999] hit n
 check "netstat parser finds a live local connection ($n rows seen)" $hit
 
-# ---- Windows Firewall: install, ban, unban, remove, using the real netsh ----
+phase "windows firewall (netsh)"
 if {$admin} {
     freshCfg {firewall netsh allowlist {}}
     ::tg::fw::init netsh
@@ -41,7 +41,7 @@ if {$admin} {
     puts "SKIP firewall tests: not an administrator"
 }
 
-# ---- sign-in autostart through Task Scheduler ----
+phase "autostart (schtasks)"
 catch {exec schtasks /Delete /TN TclGuard /F}
 check "no autostart task to begin with" [expr {![::tg::autostart::status]}]
 set err [::tg::autostart::enable]
@@ -52,7 +52,7 @@ check "task runs the program with --gui at logon" [expr {!$rc && [string match "
 set err [::tg::autostart::disable]
 check "autostart can be removed" [expr {$err eq "" && ![::tg::autostart::status]}] $err
 
-# ---- config/state locations ----
+phase "locations"
 set h [::tg::cfg::homeDir]
 check "config folder is under %APPDATA% ($h)" [expr {[string match -nocase "*TclGuard" $h]}]
 check "file attributes -permissions does not break saving" [expr {![catch {::tg::cfg::save [file join $::env(TEMP) tg-perm.conf] [::tg::cfg::new]}]}]

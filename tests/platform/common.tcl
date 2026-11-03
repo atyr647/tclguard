@@ -1,5 +1,7 @@
 # Shared helpers for the platform tests. Run with the project's own Tcl:
 #   tclsh8.6 windows_test.tcl      or      tclguard.exe eval windows_test.tcl
+# Piped stdout is fully buffered by default; a hang would then show no output at all.
+fconfigure stdout -buffering line
 set root [file normalize [file join [file dirname [info script]] .. ..]]
 lappend auto_path [file join $root tclguard.vfs lib]
 package require tclguard
@@ -23,6 +25,7 @@ proc freshCfg {general} {
     array unset ::tg::ban::banned
 }
 # Real sockets: a listener plus a connected client, then look for it in the OS connection table.
+proc phase {name} { puts "--- $name"; flush stdout }
 proc connectionTableSees {port} {
     set srv [socket -server {apply {{c a p} { set ::peer $c }}} -myaddr 127.0.0.1 $port]
     set cl [socket 127.0.0.1 $port]
