@@ -121,6 +121,7 @@ proc ::tg::fw::init {{want ""}} {
     if {$want eq ""} { set want [::tg::cfg::general firewall] }
     set wanted $want
     set lastError ""
+    set privileged [isPrivileged]
     set b [choose $want]
     if {$b eq ""} {
         set lastError "firewall backend '$want' is not available on this system"
@@ -130,9 +131,7 @@ proc ::tg::fw::init {{want ""}} {
     }
     set backend $b
     if {$b eq "none"} { return 1 }
-    set privileged [isPrivileged]
     if {!$privileged} {
-        global tcl_platform
         set lastError "not running with administrator rights: kernel firewall ($b) disabled, using proxy-level protection only"
         ::tg::log::warn $lastError
         set backend none

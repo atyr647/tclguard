@@ -23,6 +23,7 @@ namespace eval ::tg::cfg {
         hardenDropBogusFlags 1
         removeRulesOnExit   0
         logFile             ""
+        stateDir            ""
         logLevel            info
         allowlist           {127.0.0.0/8 ::1 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 fe80::/10 fc00::/7}
         blocklist           {}
@@ -47,6 +48,9 @@ namespace eval ::tg::cfg {
         controlHost         127.0.0.1
         controlPort         9737
         controlToken        ""
+        watchPorts          {}
+        watchMaxPerIP       150
+        watchMaxSynRecv     40
     }
 
     # ---- per-listener defaults ----------------------------------------------
@@ -79,6 +83,7 @@ namespace eval ::tg::cfg {
         reqWindow 10
         headerTimeout 10
         keepAliveTimeout 60
+        bodyTimeout 30
         idleTimeout 120
         maxLifetime 0
         maxHeaderBytes 16384
@@ -106,6 +111,7 @@ namespace eval ::tg::cfg {
         minPacket 1
         maxPacket 1500
         sessionTimeout 60
+        banOffenders 1
     }
     variable watcherDefaults {
         enabled 1
@@ -123,30 +129,35 @@ namespace eval ::tg::cfg {
     variable presets
     array set presets {}
     set presets(website) {
+        title "Website / web app (HTTP)"
         description "Website / web app (HTTP, port 80). Full request inspection."
         listeners {
             {type http port 80 backendPort 8080}
         }
     }
     set presets(website-tls) {
+        title "HTTPS website (TLS passed through)"
         description "HTTPS website (port 443, TLS passed through untouched). Connection-level protection only."
         listeners {
             {type tcp port 443 backendPort 8443 maxConnsPerIP 60 connRate 100 firstByteTimeout 15}
         }
     }
     set presets(minecraft-java) {
+        title "Minecraft: Java Edition"
         description "Minecraft: Java Edition (TCP 25565)."
         listeners {
             {type tcp port 25565 backendPort 25566 maxConnsPerIP 4 connRate 15 firstByteTimeout 8}
         }
     }
     set presets(minecraft-bedrock) {
+        title "Minecraft: Bedrock Edition"
         description "Minecraft: Bedrock Edition (UDP 19132)."
         listeners {
             {type udp port 19132 backendPort 19133 maxSessionsPerIP 3 pps 1200}
         }
     }
     set presets(valheim) {
+        title "Valheim"
         description "Valheim dedicated server (UDP 2456-2457)."
         listeners {
             {type udp port 2456 backendPort 12456 maxSessionsPerIP 3 pps 600}
@@ -154,6 +165,7 @@ namespace eval ::tg::cfg {
         }
     }
     set presets(source-engine) {
+        title "Source games (CS2, TF2, Garry's Mod...)"
         description "Source engine games: CS2, TF2, Garry's Mod, L4D2 (UDP+TCP 27015)."
         listeners {
             {type udp port 27015 backendPort 27115 maxSessionsPerIP 3 pps 500 replyBytesPerSec 600000}
@@ -161,42 +173,49 @@ namespace eval ::tg::cfg {
         }
     }
     set presets(terraria) {
+        title "Terraria"
         description "Terraria (TCP 7777)."
         listeners {
             {type tcp port 7777 backendPort 7778 maxConnsPerIP 4 connRate 12 firstByteTimeout 10}
         }
     }
     set presets(factorio) {
+        title "Factorio"
         description "Factorio (UDP 34197)."
         listeners {
             {type udp port 34197 backendPort 34198 maxSessionsPerIP 2 pps 500}
         }
     }
     set presets(palworld) {
+        title "Palworld"
         description "Palworld (UDP 8211)."
         listeners {
             {type udp port 8211 backendPort 8212 maxSessionsPerIP 3 pps 800}
         }
     }
     set presets(rust) {
+        title "Rust"
         description "Rust (UDP 28015)."
         listeners {
             {type udp port 28015 backendPort 28016 maxSessionsPerIP 3 pps 900}
         }
     }
     set presets(ssh) {
+        title "SSH (remote login)"
         description "SSH (TCP 22). The server speaks first, so backend connects immediately."
         listeners {
             {type tcp port 22 backendPort 2222 maxConnsPerIP 6 connRate 12 lazyConnect 0 firstByteTimeout 0}
         }
     }
     set presets(custom-tcp) {
+        title "Other TCP service"
         description "Generic TCP service."
         listeners {
             {type tcp port 9000 backendPort 9001}
         }
     }
     set presets(custom-udp) {
+        title "Other UDP service"
         description "Generic UDP service."
         listeners {
             {type udp port 9000 backendPort 9001}
@@ -436,12 +455,12 @@ proc ::tg::cfg::validate {cfg} {
                 lappend errs "$p: $k must be a positive whole number"
             }
         }
-        foreach k {firstByteTimeout headerTimeout keepAliveTimeout idleTimeout maxLifetime minPacket challengeTtl} {
+        foreach k {firstByteTimeout headerTimeout keepAliveTimeout bodyTimeout idleTimeout maxLifetime minPacket challengeTtl} {
             if {[dict exists $L $k] && ![::tg::isInt [dict get $L $k] 0 1000000000]} {
                 lappend errs "$p: $k must be a whole number >= 0 (seconds, 0 = off)"
             }
         }
-        foreach k {lazyConnect forwardIp} {
+        foreach k {lazyConnect forwardIp banOffenders} {
             if {[dict exists $L $k] && ![string is boolean -strict [dict get $L $k]]} { lappend errs "$p: $k must be yes/no" }
         }
         if {[dict exists $L proxyProtocol] && [dict get $L proxyProtocol] ni {none v1 v2}} {

@@ -418,7 +418,10 @@ proc ::tg::level::setManual {n} {
     variable manual
     if {$n eq "auto"} {
         set manual -1
-        ::tg::log::info "threat level set back to automatic"
+        # Back to automatic starts from Normal; the evaluator re-escalates within
+        # seconds if the traffic still looks like an attack.
+        enter 0 "returned to automatic control"
+        ::tg::log::info "threat level is automatic again"
         return
     }
     set manual $n

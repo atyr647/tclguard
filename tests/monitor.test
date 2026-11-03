@@ -1,0 +1,88 @@
+source [file join [file dirname [info script]] helpers.tcl]
+loadmods util config bans limiter monitor logwatch
+set ::tg::log::stderr 0
+freezeClock
+
+test mon-hex4 {} -body { ::tg::mon::hexToIp 0100007F } -result 127.0.0.1
+test mon-hex4b {} -body { ::tg::mon::hexToIp 0A01A8C0 } -result 192.168.1.10
+test mon-hex6-loop {} -body { ::tg::mon::hexToIp 00000000000000000000000001000000 } -result ::1
+test mon-hex6-mapped {} -body { ::tg::mon::hexToIp 0000000000000000FFFF00000100007F } -result 127.0.0.1
+test mon-hex6-global {} -body { ::tg::mon::hexToIp B80D01200000000000000000A0A0A0A0 } -match glob -result {2001:db8::*}
+
+set tcp {  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:1F90 0201A8C0:C350 01 00000000:00000000 00:00000000 00000000  1000        0 12345 1 0000
+   1: 0100007F:1F90 0301A8C0:C351 03 00000000:00000000 00:00000000 00000000  1000        0 12346 1 0000
+   2: 00000000:0016 6401A8C0:D000 01 00000000:00000000 00:00000000 00000000     0        0 22222 1 0000}
+test mon-parse-tcp {} -body {
+    ::tg::mon::parseProcTcp $tcp
+} -result {{192.168.1.2 8080 01} {192.168.1.3 8080 03} {192.168.1.100 22 01}}
+
+test mon-parse-netstat {} -body {
+    ::tg::mon::parseNetstat "Active Connections\n\n  Proto  Local Address          Foreign Address        State\n  TCP    10.0.0.5:25565         203.0.113.7:51234      ESTABLISHED\n  TCP    10.0.0.5:25565         203.0.113.8:51235      SYN_RECEIVED\n  TCP    \[::1\]:80             \[::1\]:50000           ESTABLISHED\n"
+} -result {{203.0.113.7 25565 01} {203.0.113.8 25565 03} {::1 80 01}}
+
+test mon-netdev {} -body {
+    set txt "Inter-|   Receive                                                |  Transmit
+ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+    lo: 1000 10 0 0 0 0 0 0 1000 10 0 0 0 0 0 0
+  eth0: 5000 50 0 0 0 0 0 0 7000 70 0 0 0 0 0 0
+docker0: 99 9 0 0 0 0 0 0 99 9 0 0 0 0 0 0"
+    list [::tg::mon::parseNetDev $txt auto] [::tg::mon::parseNetDev $txt eth0]
+} -result {{5000 50 7000 70} {5000 50 7000 70}}
+
+proc cfgFresh {{extra {}} {watchers {}}} {
+    set ::tg::clockSkew 0
+    array unset ::tg::ban::banned; array unset ::tg::ban::hist; array unset ::tg::ban::score
+    ::tg::rate::reset
+    set c [::tg::cfg::new]
+    dict for {k v} $extra { dict set c general $k $v }
+    dict set c watchers $watchers
+    ::tg::cfg::set_ $c
+    ::tg::ban::configure
+    ::tg::logw::configure
+}
+
+test logw-extract {} -body {
+    list [::tg::logw::extract {Failed password for .* from ([0-9a-fA-F:.]+) port} "Oct 1 sshd: Failed password for root from 203.0.113.9 port 22 ssh2"] \
+         [::tg::logw::extract {Failed password for .* from ([0-9a-fA-F:.]+) port} "nothing here"] \
+         [::tg::logw::extract {from (\S+)} "from not-an-ip"]
+} -result {203.0.113.9 {} {}}
+
+test logw-ban-after-threshold {} -setup {cfgFresh {} {ssh {file /x pattern {from ([0-9.]+)} hits 3 window 60 banSec 0}}} -body {
+    foreach i {1 2} { ::tg::logw::feedLine ssh "bad login from 203.0.113.9" }
+    set a [::tg::ban::isBanned 203.0.113.9]
+    ::tg::logw::feedLine ssh "bad login from 203.0.113.9"
+    list $a [::tg::ban::isBanned 203.0.113.9] [dict get [::tg::ban::lookup 203.0.113.9] source]
+} -result {0 1 log}
+
+test logw-window {hits spread beyond the window don't ban} -setup {cfgFresh {} {ssh {file /x pattern {from ([0-9.]+)} hits 3 window 10 banSec 0}}} -body {
+    foreach i {1 2} { ::tg::logw::feedLine ssh "from 203.0.113.9"; incr ::tg::clockSkew 8000 }
+    ::tg::logw::feedLine ssh "from 203.0.113.9"
+    ::tg::ban::isBanned 203.0.113.9
+} -result 0
+
+test logw-allowlist {} -setup {cfgFresh {} {ssh {file /x pattern {from ([0-9.]+)} hits 1 window 60 banSec 0}}} -body {
+    ::tg::logw::feedLine ssh "from 192.168.1.5"
+    ::tg::ban::isBanned 192.168.1.5
+} -result 0
+
+test logw-tail-file {real file: starts at end, handles partial lines and rotation} -setup {
+    cfgFresh {} [list ssh [list file [file join [makeDirectory lw] a.log] pattern {from ([0-9.]+)} hits 2 window 60 banSec 0]]
+} -body {
+    set f [file join [makeDirectory lw] a.log]
+    set fh [open $f w]; puts $fh "from 203.0.113.9"; puts $fh "from 203.0.113.9"; close $fh   ;# old history
+    ::tg::logw::poll 0
+    set r [::tg::ban::isBanned 203.0.113.9]            ;# must be 0: history ignored
+    set fh [open $f a]; puts -nonewline $fh "from 203.0.113.9\nfrom 203.0.1"; close $fh
+    ::tg::logw::poll 0
+    lappend r [::tg::ban::isBanned 203.0.113.9]         ;# 1 full new line only
+    set fh [open $f a]; puts $fh "13.9"; close $fh        ;# completes the partial line -> 203.0.113.9 again? no: 203.0.113.9 was split as 203.0.1 + 13.9
+    ::tg::logw::poll 0
+    lappend r [::tg::ban::isBanned 203.0.113.9]
+    file delete $f
+    set fh [open $f w]; puts $fh "from 203.0.113.50"; puts $fh "from 203.0.113.50"; close $fh   ;# rotated
+    ::tg::logw::poll 0
+    lappend r [::tg::ban::isBanned 203.0.113.50]
+} -result {0 0 1 1}
+
+cleanupTests
