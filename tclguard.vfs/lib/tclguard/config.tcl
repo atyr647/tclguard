@@ -82,6 +82,10 @@ namespace eval ::tg::cfg {
         tlsCiphers ""
         tlsHandshakeTimeout 10
         tlsMaxHandshaking 256
+        acme 0
+        acmeEmail ""
+        acmeDirectory ""
+        acmeCaFile ""
     }
     variable httpDefaults {
         maxConns 2000
@@ -106,6 +110,8 @@ namespace eval ::tg::cfg {
         challenge auto
         challengeTtl 3600
         pathLimits {}
+        redirectHttps 0
+        redirectPort 443
         lazyConnect 1
         proxyProtocol none
         tls 0
@@ -116,6 +122,10 @@ namespace eval ::tg::cfg {
         tlsCiphers ""
         tlsHandshakeTimeout 10
         tlsMaxHandshaking 256
+        acme 0
+        acmeEmail ""
+        acmeDirectory ""
+        acmeCaFile ""
     }
     variable udpDefaults {
         maxSessions 4000
@@ -479,7 +489,7 @@ proc ::tg::cfg::validate {cfg} {
                 lappend errs "$p: $k must be a whole number >= 0 (seconds, 0 = off)"
             }
         }
-        foreach k {lazyConnect forwardIp banOffenders learnTrust} {
+        foreach k {lazyConnect forwardIp banOffenders learnTrust redirectHttps} {
             if {[dict exists $L $k] && ![string is boolean -strict [dict get $L $k]]} { lappend errs "$p: $k must be yes/no" }
         }
         if {[dict exists $L tls] && [::tg::bool [dict get $L tls]]} {
@@ -492,6 +502,19 @@ proc ::tg::cfg::validate {cfg} {
             if {[dict get $L tlsCert] eq "" && [dict get $L tlsKey] ne ""} { lappend errs "$p: tlsKey needs tlsCert too" }
             foreach k {tlsHandshakeTimeout tlsMaxHandshaking} {
                 if {![::tg::isInt [dict get $L $k] 1 1000000]} { lappend errs "$p: $k must be a positive whole number" }
+            }
+            if {[::tg::bool [dict get $L acme]]} {
+                if {[dict get $L tlsCert] ne ""} { lappend errs "$p: acme (automatic certificates) cannot be combined with tlsCert/tlsKey" }
+                if {![llength [dict get $L tlsNames]]} { lappend errs "$p: acme needs tlsNames: the domain name(s) to get a certificate for" }
+                foreach nm [dict get $L tlsNames] {
+                    if {[::tg::ip::isValid $nm] || [string first * $nm] >= 0} {
+                        lappend errs "$p: acme cannot issue for '$nm': use plain DNS names (no IP addresses, no wildcards: those need DNS validation)"
+                    }
+                }
+                set em [dict get $L acmeEmail]
+                if {$em ne "" && ![regexp {^[^@\s,"<>]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$} $em]} { lappend errs "$p: acmeEmail is not a valid e-mail address" }
+                set du [dict get $L acmeDirectory]
+                if {$du ne "" && ![regexp -nocase {^https://[^\s"]+$} $du]} { lappend errs "$p: acmeDirectory must be an https:// URL" }
             }
             foreach nm [dict get $L tlsNames] {
                 if {![regexp {^[A-Za-z0-9._*:-]+$} $nm]} { lappend errs "$p: tlsNames: '$nm' is not a valid host name or address" }

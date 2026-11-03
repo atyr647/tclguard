@@ -105,7 +105,7 @@ proc ::tg::control::readable {chan} {
         reply $chan 0 $result
     } else {
         # queries return structured data, actions return a sentence
-        set kind [expr {[lindex $words 0] in {status bans top log listeners debug} || [lrange $words 0 1] eq {fw status} ? "data" : "msg"}]
+        set kind [expr {[lindex $words 0] in {status bans top log listeners debug tls} || [lrange $words 0 1] eq {fw status} ? "data" : "msg"}]
         reply $chan 1 $result $kind
     }
 }

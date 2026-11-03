@@ -381,6 +381,10 @@ proc ::tg::http::handleRequest {id block} {
     set method [dict get $d method]
     set target [dict get $d target]
 
+    # Let's Encrypt HTTP-01 validation and the optional http->https redirect are answered before the
+    # per-address limits: the CA's validators are strangers and must always get through.
+    if {$method in {GET HEAD} && [special $id $Lc $d $method $target]} { return stop }
+
     if {!$privileged} {
         # per-IP request rate
         set rw [expr {[dict get $Lc reqWindow] * 1000}]
@@ -568,15 +572,21 @@ proc ::tg::http::reject {id code why strike} {
 # with unread request data makes the OS send a reset that can destroy the
 # response before the client has read it.)
 proc ::tg::http::respondRaw {id code {reason ""} {text ""} {extra ""}} {
-    variable reasons; variable ps; variable buf
-    if {![info exists ::tg::tcp::cc($id)]} return
+    variable reasons
     if {$reason eq ""} { set reason [expr {[info exists reasons($code)] ? $reasons($code) : "Error"}] }
     set body ""
     if {$text ne ""} {
         set safe [string map {& &amp; < &lt; > &gt;} $text]
         set body "<!doctype html><title>$code $reason</title><h1>$code $reason</h1><p>$safe</p>\n"
     }
-    set resp "HTTP/1.1 $code $reason\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: [string length $body]\r\nConnection: close\r\nCache-Control: no-store\r\n$extra\r\n$body"
+    respondBody $id $code $reason "text/html; charset=utf-8" $body $extra
+}
+
+proc ::tg::http::respondBody {id code reason ctype body extra {omitBody 0}} {
+    variable ps; variable buf
+    if {![info exists ::tg::tcp::cc($id)]} return
+    set resp "HTTP/1.1 $code $reason\r\nContent-Type: $ctype\r\nContent-Length: [string length $body]\r\nConnection: close\r\nCache-Control: no-store\r\n$extra\r\n"
+    if {!$omitBody} { append resp $body }
     set chan $::tg::tcp::cc($id)
     # the backend is no longer needed
     set b $::tg::tcp::bc($id)
@@ -589,6 +599,36 @@ proc ::tg::http::respondRaw {id code {reason ""} {text ""} {extra ""}} {
     set buf($id) ""
     set ::tg::tcp::dl($id) [expr {[::tg::now] + 3000}]
     catch {fileevent $chan readable [list ::tg::http::drainRead $id]}
+}
+
+# Requests answered by the guard itself, ahead of the limits. Returns 1 if it replied.
+#   * /.well-known/acme-challenge/<token> for a certificate order that is in progress
+#   * redirectHttps: send plain-HTTP visitors to the https:// address
+proc ::tg::http::special {id Lc d method target} {
+    set path [lindex [split $target ?#] 0]
+    if {[string match /.well-known/acme-challenge/* $path]} {
+        set ka [::tg::acme::answer $path]
+        if {$ka ne ""} {
+            ::tg::stat::incr ok
+            respondBody $id 200 OK "text/plain" $ka "" [expr {$method eq "HEAD"}]
+            return 1
+        }
+    }
+    if {[dict exists $Lc redirectHttps] && [::tg::bool [dict get $Lc redirectHttps]] && ![::tg::tls::enabled $Lc]} {
+        set host ""
+        foreach h [dict get $d headers] { lassign $h ln hn hv raw; if {$ln eq "host"} { set host $hv } }
+        # only host names / addresses: never reflect anything else into a Location header
+        if {![regexp {^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(:[0-9]{1,5})?$} $host -> hostOnly]} {
+            respondRaw $id 400 "" "Bad Host header"
+            return 1
+        }
+        set port [expr {[dict exists $Lc redirectPort] ? [dict get $Lc redirectPort] : 443}]
+        set loc "https://$hostOnly[expr {$port == 443 ? "" : ":$port"}]$target"
+        ::tg::stat::incr ok
+        respondBody $id 308 "Permanent Redirect" "text/plain" "Redirecting to $loc\n" "Location: $loc\r\n" [expr {$method eq "HEAD"}]
+        return 1
+    }
+    return 0
 }
 
 proc ::tg::http::drainRead {id} {

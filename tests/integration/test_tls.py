@@ -63,9 +63,9 @@ g = Guard({"secure": {"type": "http", "port": port, "backendPort": be.port, "tls
           {"strikeThreshold": 8, "strikeLeakPerSec": 0, "banSteps": "{30 60}"})
 try:
     g.start(); assert wait_port(port)
-    crt = os.path.join(g.dir, "certs", "secure.crt")
-    check("a certificate was generated in the state folder", os.path.exists(crt) and os.path.exists(os.path.join(g.dir, "certs", "secure.key")))
-    check("private key is not world-readable", os.name == "nt" or (os.stat(os.path.join(g.dir, "certs", "secure.key")).st_mode & 0o077) == 0)
+    crt = os.path.join(g.dir, "certs", "secure.pem")
+    check("a certificate (with its key) was generated in the state folder", os.path.exists(crt) and b"PRIVATE KEY" in open(crt, "rb").read())
+    check("the key file is not world-readable", os.name == "nt" or (os.stat(crt).st_mode & 0o077) == 0)
 
     r = https_get(port, "/hello", cafile=crt)
     check("HTTPS request is served and the certificate verifies (SAN localhost)", status(r) == 200 and b"ok:GET /hello" in r, r[:100])
@@ -184,11 +184,23 @@ if OPENSSL:
         check("tlsMinVersion 1.3 accepts TLS 1.3", handshake_ok(port, None, minv=ssl.TLSVersion.TLSv1_3) == "TLSv1.3")
         shutil.copy(os.path.join(d, "b.crt"), os.path.join(d, "live.crt")); shutil.copy(os.path.join(d, "b.key"), os.path.join(d, "live.key"))
         check("replacing the certificate files takes effect for new connections without a restart", "second.test" in peer_cn(), peer_cn())
-        # chain: leaf + an extra certificate in one file
-        with open(os.path.join(d, "live.crt"), "ab") as f: f.write(open(os.path.join(d, "a.crt"), "rb").read())
-        s = socket.create_connection(("127.0.0.1", port), 5)
-        t = client_ctx(None).wrap_socket(s, server_hostname="localhost")
-        check("a certificate chain file (leaf + intermediate) works", handshake_ok(port, None) is not None)
+        # a real three-level chain (root -> intermediate -> leaf) in one file, like a CA delivers it
+        def run(*a, **k): subprocess.run(list(a), capture_output=True, check=True, **k)
+        ec = ["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes"]
+        run(OPENSSL, "req", "-x509", *ec, "-days", "30", "-subj", "/CN=Test Root", "-keyout", d + "/root.key", "-out", d + "/root.pem", "-addext", "basicConstraints=critical,CA:TRUE")
+        run(OPENSSL, "req", "-new", *ec, "-subj", "/CN=Test Intermediate", "-keyout", d + "/int.key", "-out", d + "/int.csr")
+        open(d + "/int.ext", "w").write("basicConstraints=critical,CA:TRUE,pathlen:0\nkeyUsage=critical,keyCertSign,cRLSign\n")
+        run(OPENSSL, "x509", "-req", "-in", d + "/int.csr", "-CA", d + "/root.pem", "-CAkey", d + "/root.key", "-CAcreateserial", "-days", "30", "-out", d + "/int.pem", "-extfile", d + "/int.ext")
+        run(OPENSSL, "req", "-new", *ec, "-subj", "/CN=localhost", "-keyout", d + "/leaf.key", "-out", d + "/leaf.csr")
+        open(d + "/leaf.ext", "w").write("subjectAltName=DNS:localhost\nbasicConstraints=CA:FALSE\n")
+        run(OPENSSL, "x509", "-req", "-in", d + "/leaf.csr", "-CA", d + "/int.pem", "-CAkey", d + "/int.key", "-CAcreateserial", "-days", "30", "-out", d + "/leaf.pem", "-extfile", d + "/leaf.ext")
+        open(d + "/live.crt", "wb").write(open(d + "/leaf.pem", "rb").read() + open(d + "/int.pem", "rb").read())
+        shutil.copy(d + "/leaf.key", d + "/live.key")
+        p = subprocess.run([OPENSSL, "s_client", "-connect", f"127.0.0.1:{port}", "-showcerts", "-CAfile", d + "/root.pem", "-verify_hostname", "localhost"],
+                           input=b"", capture_output=True, timeout=15)
+        out = (p.stdout + p.stderr).decode("latin1")
+        check("a CA-style chain file (leaf + intermediate): the whole chain is sent", out.count("BEGIN CERTIFICATE") >= 2, out.count("BEGIN CERTIFICATE"))
+        check("...so a client that only trusts the root verifies it (no missing-intermediate error)", "Verify return code: 0 (ok)" in out, out[-300:])
     finally:
         g.cleanup(); be.stop(); shutil.rmtree(d, ignore_errors=True)
 
@@ -210,7 +222,7 @@ echo = TcpEcho(); port = free_port()
 g = Guard({"tcpsec": {"type": "tcp", "port": port, "backendPort": echo.port, "tls": 1, "connRate": 1000, "maxConnsPerIP": 400}}, {})
 try:
     g.start(); assert wait_port(port)
-    crt = os.path.join(g.dir, "certs", "tcpsec.crt")
+    crt = os.path.join(g.dir, "certs", "tcpsec.pem")
     s = socket.create_connection(("127.0.0.1", port), 5)
     t = client_ctx(crt).wrap_socket(s, server_hostname="localhost"); t.settimeout(5)
     t.sendall(b"hello over tls"); d = t.recv(100)

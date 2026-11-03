@@ -86,7 +86,7 @@ class HttpBackend:
                         c.sendall(b"echo:" + d)
                 resp = b"ok:" + lines[0].encode() + b":" + str(len(body)).encode()
                 c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n" % len(resp) + resp)
-                if self.close_after: return
+                if self.close_after or hdrs.get("connection", "").lower() == "close": return   # like a real server
         except Exception: pass
         finally:
             try: c.close()

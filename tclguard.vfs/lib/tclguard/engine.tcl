@@ -155,6 +155,7 @@ proc ::tg::engine::tick {t} {
     ::tg::udp::sweep $t
     ::tg::logw::poll $t
     ::tg::fw::tick $t
+    ::tg::acme::tick $t
     if {$t - $::tg::engine::lastHouse > 3600000} {
         set ::tg::engine::lastHouse $t
         catch {::tg::tls::housekeeping}
@@ -259,6 +260,21 @@ proc ::tg::engine::cmd {verb args} {
             if {![::tg::isInt $v 0 3]} { error "level must be 0-3 or auto" }
             ::tg::level::setManual $v
             return "threat level pinned to [::tg::level::name]"
+        }
+        tls {
+            # certificate + ACME state per TLS listener; "tls renew <listener>" retries a certificate order now
+            if {[lindex $args 0] eq "renew"} {
+                set n [lindex $args 1]
+                if {$n eq "" || ![info exists ::tg::tls::files($n)]} { error "usage: tls renew <tls listener name>" }
+                ::tg::acme::requestNow $n
+                return "will retry the certificate order for $n within a second"
+            }
+            set out {}
+            foreach {n L} [::tg::cfg::listeners] {
+                if {![::tg::tls::enabled $L]} continue
+                dict set out $n [dict merge [::tg::tls::certStatus $n] [dict create acme [::tg::acme::enabled $L] acmeState [::tg::acme::state $n]]]
+            }
+            return $out
         }
         top       { return $::tg::stat::top }
         log       { set n [lindex $args 0]; if {$n eq ""} { set n 50 }; return [::tg::log::tail $n info] }

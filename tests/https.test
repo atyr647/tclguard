@@ -1,0 +1,77 @@
+source [file join [file dirname [info script]] helpers.tcl]
+loadmods util config crypto json tlsproxy httpsclient
+set ::tg::log::stderr 0
+
+set haveTls [::tg::tls::available]
+set openssl [auto_execok openssl]
+set ::skip [expr {!$haveTls || $openssl eq ""}]
+
+if {!$::skip} {
+    # A local TLS server whose certificate (made by our own crypto code) covers localhost only.
+    set dir [makeDirectory httpstest]
+    set k [::tg::crypto::newKey]
+    set fh [open [file join $dir key.pem] w]; puts -nonewline $fh [::tg::crypto::keyToPem $k]; close $fh
+    set fh [open [file join $dir cert.pem] w]; puts -nonewline $fh [::tg::crypto::selfSigned $k {localhost}]; close $fh
+    set port [expr {20000 + [pid] % 20000}]
+    set srv [open [list |$openssl s_server -accept $port -cert [file join $dir cert.pem] -key [file join $dir key.pem] -www -quiet 2>@1] r]
+    after 800
+    ::tg::https::setCaFile [file join $dir cert.pem]
+}
+
+test host-ok {a certificate that covers the name is accepted} -constraints {} -body {
+    if {$::skip} { return skipped }
+    set r [::tg::https::get https://localhost:$port/ -timeout 8000]
+    expr {[dict get $r code] == 200}
+} -result {1}
+
+test host-mismatch {a trusted certificate for another name is refused} -body {
+    if {$::skip} { return skipped }
+    # same server, but addressed by IP: the certificate has no IP SAN
+    expr {[catch {::tg::https::get https://127.0.0.1:$port/ -timeout 8000} msg] && [string match "*not valid for that name*" $msg]}
+} -result {1}
+
+test untrusted {an untrusted certificate is refused} -body {
+    if {$::skip} { return skipped }
+    ::tg::https::setCaFile [file join $::root tclguard.vfs lib tclguard vendor cacert.pem]
+    set r [catch {::tg::https::get https://localhost:$port/ -timeout 8000} msg]
+    ::tg::https::setCaFile [file join $dir cert.pem]
+    expr {$r && [string match "*handshake*" $msg]}
+} -result {1}
+
+test no-plain-http {plain http:// is refused} -body {
+    expr {[catch {::tg::https::get http://localhost:$port/} msg] && [string match "refusing non-HTTPS*" $msg]}
+} -result {1}
+
+test hostmatch-wildcards {wildcard matching is one left-most label} -body {
+    set ci [dict create names {*.example.com example.org} cn ignored]
+    list [::tg::https::hostMatches www.example.com $ci] [::tg::https::hostMatches a.b.example.com $ci] \
+         [::tg::https::hostMatches example.com $ci] [::tg::https::hostMatches example.org $ci] \
+         [::tg::https::hostMatches ignored $ci] [::tg::https::hostMatches EXAMPLE.ORG $ci]
+} -result {1 0 0 1 0 1}
+
+test hostmatch-cn-fallback {CN is used only when there are no SANs} -body {
+    list [::tg::https::hostMatches foo.test [dict create names {} cn foo.test]] \
+         [::tg::https::hostMatches foo.test [dict create names {bar.test} cn foo.test]]
+} -result {1 0}
+
+test json-parse {JSON documents parse (\u escapes and surrogate pairs)} -body {
+    set json "\{\"a\": \[1, 2, \{\"b\": \"x\\n\\u00e9\\ud83d\\ude00\"\}\], \"t\": true, \"n\": null, \"neg\": -1.5e2\}"
+    set d [::tg::json::parse $json]
+    list [dict get $d a] [dict get $d t] [expr {[dict get $d n] eq ""}] [dict get $d neg]
+} -result [list [list 1 2 [list b "x\n[format %c 0xe9][format %c 0x1f600]"]] 1 1 -1.5e2]
+
+test json-errors {malformed JSON is an error, not garbage} -body {
+    set bad 0
+    foreach t {{} {{"a":}} {[1,]} {{"a" 1}} {"abc} {{"a":1} x} "\{\"a\":\"\x01\"\}" {[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}} {
+        if {[catch {::tg::json::parse $t}]} { incr bad }
+    }
+    set bad
+} -result 8
+
+test json-quote {quote() output parses back} -body {
+    set s "a\"b\\c\n\té\x01"
+    expr {[::tg::json::parse [::tg::json::quote $s]] eq $s}
+} -result 1
+
+if {!$::skip} { catch {exec kill [pid $srv]}; catch {close $srv} }
+cleanupTests

@@ -48,7 +48,9 @@ proc ::tg::tls::locate {name L} {
     set k [expr {[dict exists $L tlsKey]  ? [dict get $L tlsKey]  : ""}]
     if {$c ne ""} { return [list $c $k provided] }
     set safe [regsub -all {[^A-Za-z0-9_.-]} $name _]
-    list [file join [certDir] $safe.crt] [file join [certDir] $safe.key] managed
+    # one file holding the certificate chain and the key, so a renewal is a single atomic replace
+    set pem [file join [certDir] $safe.pem]
+    list $pem $pem managed
 }
 
 proc ::tg::tls::defaultNames {L} {
@@ -86,19 +88,18 @@ proc ::tg::tls::ensureCert {name L} {
         if {![file readable $cert]} { return "certificate file not readable: $cert" }
         if {$key eq "" || ![file readable $key]} { return "private key file not readable: $key" }
     } else {
+        # (re)generate only our own self-signed placeholder; never overwrite a CA-issued certificate
         set renew 1
-        if {[file exists $cert] && [file exists $key]} {
+        if {[file exists $cert]} {
             if {![catch {::tg::crypto::certInfo [readFile $cert]} ci]} {
-                # keep it while at least 14 days remain
-                if {[dict get $ci notAfter] - [clock seconds] > 14 * 86400} { set renew 0 }
+                if {![dict get $ci selfSigned] || [dict get $ci notAfter] - [clock seconds] > 14 * 86400} { set renew 0 }
             }
         }
         if {$renew} {
             if {[catch {
                 set k [::tg::crypto::newKey]
                 set names [defaultNames $L]
-                writeSecret $key [::tg::crypto::keyToPem $k]
-                writeSecret $cert [::tg::crypto::selfSigned $k $names 397]
+                writeSecret $cert [::tg::crypto::selfSigned $k $names 397][::tg::crypto::keyToPem $k]
             } err]} { return "could not create a certificate: $err" }
             ::tg::log::info "tls '$name': generated a self-signed certificate for [join [defaultNames $L] {, }] ($cert)"
         }
@@ -145,7 +146,10 @@ proc ::tg::tls::prepare {name L} {
 
 proc ::tg::tls::importOpts {L cert key} {
     set minv [expr {[dict exists $L tlsMinVersion] ? [dict get $L tlsMinVersion] : "1.2"}]
-    set opts [list -server 1 -request 0 -require 0 -certfile $cert -keyfile $key \
+    # tcltls sends only the first certificate of a chain file unless the chain is also in the CA store
+    # (OpenSSL then builds leaf + intermediates from it): without this, clients that do not fetch
+    # missing intermediates (curl, Go, Python, mobile apps, game launchers) reject Let's Encrypt certificates.
+    set opts [list -server 1 -request 0 -require 0 -certfile $cert -keyfile $key -cafile $cert \
         -ssl2 0 -ssl3 0 -tls1 0 -tls1.1 0 -tls1.2 [expr {$minv eq "1.2"}] -tls1.3 1]
     set ciphers [expr {[dict exists $L tlsCiphers] ? [dict get $L tlsCiphers] : ""}]
     if {$ciphers eq ""} { set ciphers {ECDHE+AESGCM:ECDHE+CHACHA20:!aNULL:!eNULL:!MD5:!RC4:!3DES} }

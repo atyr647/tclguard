@@ -17,11 +17,25 @@
 # (pass its path in TCLKIT; build the linux one first). Takes ~15 minutes per target.
 set -euo pipefail
 target=${1:-linux}
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
 work=${WORK:-$PWD/.tclkit-build-$target}
 mkdir -p "$work" && cd "$work"
 [ -d kc ] || { curl -fsSL -o kc.tar.gz "https://kitcreator.rkeene.org/fossil/tarball/kitcreator.tar.gz?uuid=trunk"
                mkdir kc && tar xzf kc.tar.gz -C kc --strip-components=1; }
 cd kc
+# KitCreator pins LibreSSL 2.9.0 (2019: no TLS 1.3, known CVEs) and tcltls 1.7.19. Pin newer, hash-checked
+# ones instead (LibreSSL hashes match the OpenBSD-published SHA256 list; tcltls from core.tcl-lang.org).
+sed -i \
+  -e 's/^version="1.7.19"/version="1.7.22"/' \
+  -e 's#^url=.*#url="https://core.tcl-lang.org/tcltls/uv/tcltls-${version}.tar.gz"#' \
+  -e "s/^sha256=.*/sha256='e84e2b7a275ec82c4aaa9d1b1f9786dbe4358c815e917539ffe7f667ff4bc3b4'/" \
+  -e "s/version='2.9.0'/version='4.0.0'/" \
+  -e "s#http://ftp.openbsd.org#https://cdn.openbsd.org#" \
+  -e "s/hash='eb5f298408b723f11a0ca0192c122ecb79b4855bfdf7eea183a6264296a13cf4'/hash='4d841955f0acc3dfc71d0e3dd35f283af461222350e26843fea9731c0246a1e4'/" \
+  tls/build.sh
+# tcltls 1.7.22 does not build against current LibreSSL as shipped: patch it (see tools/patch-tcltls.sh).
+sed -i "s#^function preconfigure() {#function preconfigure() {\n\tsh \"$ROOT/tools/patch-tcltls.sh\" || return 1#" tls/build.sh
+grep -q patch-tcltls tls/build.sh || { echo "could not hook the tcltls patch"; exit 1; }
 # Generate the kitsh configure script (the fossil tarball ships without it). NOTE: this runs
 # 'kitcreator distclean', so do it before building, never between a build and its output.
 bash build/pre.sh >/dev/null 2>&1 || true

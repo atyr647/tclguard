@@ -501,7 +501,17 @@ proc ::tg::crypto::certInfo {pemText} {
             }
         }
     }
-    dict create notBefore [apply $parseTime $nbTag $nb] notAfter [apply $parseTime $naTag $na] names $names cn $cn
+    dict create notBefore [apply $parseTime $nbTag $nb] notAfter [apply $parseTime $naTag $na] names $names cn $cn \
+        selfSigned [expr {[lindex $kids 2 1] eq [lindex $kids 4 1]}]
+}
+
+# Public key {x y} of a certificate (DER).
+proc ::tg::crypto::certPublicPoint {der} {
+    lassign [derRead $der 0] t body
+    lassign [lindex [derChildren $body] 0] t tbs
+    set kids [derChildren $tbs]
+    if {[lindex $kids 0 0] == 0xA0} { set kids [lrange $kids 1 end] }
+    spkiPoint [derTag 0x30 [lindex $kids 5 1]]
 }
 
 # ------------------------------------------------------------------- JWK / JWS ---
