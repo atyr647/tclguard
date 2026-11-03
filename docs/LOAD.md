@@ -88,6 +88,51 @@ table says:
   legitimate to every per-address defence. Visitors got 132-159 requests/s at p50 35-56 ms, without errors. Nothing short of more CPU
   or a CDN helps there.
 
+## The same test on real Windows and macOS (loopback, GitHub runners)
+
+`tests/load/run_flood.py` also runs on Windows (the shipped `tclguard-windows-x86_64-console.exe`) and macOS (the shipped `tclguard-macos-arm64`,
+3 Apple-silicon cores), each twice: with Tcl doing everything, and with bans mirrored into the system firewall (`netsh` on Windows, `pf` on macOS,
+run as administrator/root). 90 s soak, 16 visitors, 256 requests/s offered.
+
+**macOS** behaves like Linux once the firewall is on:
+
+| Phase | visitors, Tcl only | visitors, `pf` bans | guard CPU (Tcl only -> pf) |
+|---|---|---|---|
+| baseline | 249 req/s, p50 2.6 ms | 239 req/s | 6% |
+| connection flood | **118 req/s, p99 652 ms, 2,096 errors** | **237 req/s, p99 17 ms, 0 errors** | 38% -> 16% |
+| slowloris | 235 | 233 | 23% -> 24% |
+| garbage / smuggling | 250 | 238 | 83% -> 11% |
+| TLS handshake flood | 228 (9 errors) | 221 | 79% -> 24% |
+| UDP flood | 248 | 240 | 121% -> 13% |
+| mixed soak | 235, p99 45 ms | 237, p99 24 ms | 79% -> 47% |
+| request flood just under the limits | 155, p50 33 ms | 153 | 84% |
+
+Capacity on macOS: 3,900 to 5,800 requests/s on one core. The 2,096 errors in the Tcl-only connection flood were all `local_ports`: the *generator* ran out of
+macOS's 16,000 ephemeral ports (a measurement limit, not the guard refusing anyone); the real finding is the 652 ms p99, which `pf` removes.
+
+**Windows is much weaker, and the firewall does not rescue it:**
+
+| Phase | visitors, Tcl only | visitors, `netsh` bans |
+|---|---|---|
+| baseline | 260 req/s, p50 1.2 ms | 259 |
+| capacity, no limits | **830 requests/s** (Linux: 5,300) | 825 |
+| request flood just under the limits | **45 req/s, p50 193 ms** | 44 |
+| connection flood | 180 req/s, 125 errors | 191, 46 errors |
+| garbage / smuggling | 168 req/s, 936 errors | 154, 46 errors |
+| TLS handshake flood | 157 req/s, 508 errors | 143, 875 errors |
+| UDP flood | 258 | 258 |
+| **mixed soak (every attack at once)** | **4 req/s, 14,600 errors, p99 7 s** | **4 req/s, 14,600 errors** |
+| recovery | 257 | 260 |
+
+Every one of those errors is `refused`: **the operating system refused the connection because the listen queue was full**, before the guard could see it (so it cannot ban
+the sender, and `netsh` bans, which only start after a few strikes, do not help). The cause is Tcl's own event loop on Windows, which hands every socket event through a
+helper thread; one core accepts a few hundred new connections per second, where Linux and macOS accept tens of thousands. In the mixed soak the attackers' connection attempts
+keep the queue full and ordinary visitors cannot get in, for as long as the attack lasts; the guard recovers the moment it stops (recovery: 257-260 req/s).
+
+What this means in practice: **on Windows TclGuard is fine for a hobby-sized server under ordinary hostility (scanners, a single abuser, slowloris, malformed requests) but
+it will not hold a determined connection flood**, and the kernel firewall cannot change that. For a Windows host that matters, put the guard on a Linux VPS in front (the setup the
+README recommends) or run it on Linux. I did not find a cheap in-process fix: the limit is how fast Tcl can accept on Windows.
+
 ## What this test does not show
 * The namespace run crosses a real kernel network path but still **one machine, one virtual link**: no physical NIC, no interrupt moderation, no packet loss, and
   bandwidth is limited only by the CPU. A **volumetric flood that fills the network line** is below the guard (see the README on what it cannot stop).
