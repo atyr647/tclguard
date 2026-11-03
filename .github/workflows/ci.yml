@@ -121,15 +121,22 @@ jobs:
         continue-on-error: true
         run: |
           curl -fsSL -o tcludp.tgz "https://downloads.sourceforge.net/project/tcludp/tcludp/1.0.11/tcludp-1.0.11.tar.gz"
-          tar xzf tcludp.tgz && cd tcludp-1.0.11
+          dir=$(tar tzf tcludp.tgz | head -1 | cut -d/ -f1)
+          tar xzf tcludp.tgz && cd "$dir" && pwd && ls
           ./configure --with-tcl=/opt/homebrew/opt/tcl-tk@8/lib --prefix=$HOME/tclpkgs
           make -j4 && make install
-          echo "TCLLIBPATH=$HOME/tclpkgs/lib" >> "$GITHUB_ENV"
+          find $HOME/tclpkgs -name 'pkgIndex.tcl' | head -3
+          echo "TCLLIBPATH=$(dirname $(find $HOME/tclpkgs -name pkgIndex.tcl | head -1))/.." >> "$GITHUB_ENV"
       - name: Which optional packages are present
         run: |
           # (never load Tk inside tclsh here: on macOS that can block waiting for a window server)
-          $TCLSH <<< 'foreach p {udp Thread} { puts [format "%-8s %s" $p [expr {[catch {package require $p} v] ? "MISSING" : $v}]] }'
-          if $TCLSH <<< 'package require udp' >/dev/null 2>&1; then echo "HAVE_UDP=1" >> "$GITHUB_ENV"; else echo "TG_NO_UDP=1" >> "$GITHUB_ENV"; fi
+          # tclsh reading a script from stdin exits 0 even when it errors, so test explicitly
+          if $TCLSH <<< 'if {[catch {package require udp} v]} { puts "udp: MISSING ($v)"; exit 1 } else { puts "udp: $v" }'; then
+            echo "HAVE_UDP=1" >> "$GITHUB_ENV"
+          else
+            echo "TG_NO_UDP=1" >> "$GITHUB_ENV"
+          fi
+          $TCLSH <<< 'puts "Thread: [package require Thread]"'
       - name: Unit tests
         run: cd tests && for t in ip config bans firewall monitor autostart; do $TCLSH $t.test; done 2>&1 | grep -E "Total|FAILED"
       - name: Self-test (source)
