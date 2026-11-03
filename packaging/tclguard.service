@@ -1,0 +1,35 @@
+# systemd unit for running TclGuard as a background service on Linux.
+#
+#   sudo cp tclguard /usr/local/bin/        (the starpack, or a wrapper script)
+#   sudo mkdir -p /etc/tclguard && sudo tclguard init --preset minecraft-java   # then edit /etc/tclguard/tclguard.conf
+#   sudo cp packaging/tclguard.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now tclguard
+#   sudo tclguard ctl status
+[Unit]
+Description=TclGuard DDoS protection
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=TCLGUARD_HOME=/etc/tclguard
+ExecStart=/usr/local/bin/tclguard --headless --config /etc/tclguard/tclguard.conf
+# Every proxied connection needs two file descriptors; the default limit (1024) is far too low.
+LimitNOFILE=65536
+Restart=on-failure
+RestartSec=3
+# Bans live in the kernel with timeouts, so protection continues while we restart.
+# Remove the kernel table only on a deliberate stop:
+# ExecStopPost=/usr/local/bin/tclguard fw remove
+
+# Needs CAP_NET_ADMIN for nftables; CAP_NET_BIND_SERVICE for ports below 1024.
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/tclguard /etc/tclguard
+StateDirectory=tclguard
+
+[Install]
+WantedBy=multi-user.target

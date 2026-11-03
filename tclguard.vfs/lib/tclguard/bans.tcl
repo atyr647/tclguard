@@ -24,6 +24,7 @@ namespace eval ::tg::ban {
     variable resetAfter 86400
     variable hasAllow 0
     variable hasBlock 0
+    variable hasRanges 0       ;# any CIDR (non-/64) bans active
 }
 
 # (Re)read settings from the active config.
@@ -54,6 +55,32 @@ proc ::tg::ban::setFile {path} {
 proc ::tg::ban::registerOnBan {cmd}   { variable onBan;   if {$cmd ni $onBan}   { lappend onBan $cmd } }
 proc ::tg::ban::registerOnUnban {cmd} { variable onUnban; if {$cmd ni $onUnban} { lappend onUnban $cmd } }
 
+# Canonical key for an address or CIDR target: addresses collapse to the limit
+# key (v4 exact, v6 /64); explicit ranges keep their prefix.
+proc ::tg::ban::keyOf {target} {
+    if {[string first / $target] >= 0} {
+        set n [::tg::ip::normCidr $target]
+        if {$n eq ""} { return $target }
+        # a /32 (v4) or /128 normalises to a plain address
+        return [expr {[string first / $n] < 0 ? [::tg::ip::key $n] : $n}]
+    }
+    ::tg::ip::key $target
+}
+
+# Ranges (CIDR bans other than the automatic v6 /64 keys) need a prefix match.
+proc ::tg::ban::rebuildRanges {} {
+    variable banned
+    variable hasRanges
+    set items {}
+    foreach k [array names banned] {
+        if {[string first / $k] < 0} continue
+        if {[string match {*:*/64} $k]} continue
+        lappend items $k
+    }
+    ::tg::ip::setLoad banrange $items
+    set hasRanges [expr {[llength $items] > 0}]
+}
+
 proc ::tg::ban::isAllowed {ip} {
     variable hasAllow
     expr {$hasAllow && [::tg::ip::setMatch allow $ip]}
@@ -63,6 +90,7 @@ proc ::tg::ban::isAllowed {ip} {
 proc ::tg::ban::check {ip} {
     variable banned
     variable hasBlock
+    variable hasRanges
     if {[isAllowed $ip]} { return 0 }
     set k [::tg::ip::key $ip]
     if {[info exists banned($k)]} {
@@ -70,16 +98,13 @@ proc ::tg::ban::check {ip} {
         if {$until == 0 || $until > [::tg::now]} { return 1 }
         remove $k expired
     }
+    if {$hasRanges && [::tg::ip::setMatch banrange $ip]} { return 1 }
     if {$hasBlock && [::tg::ip::setMatch block $ip]} { return 2 }
     return 0
 }
 
 proc ::tg::ban::isBanned {ip} {
-    variable banned
-    set k [::tg::ip::key $ip]
-    if {![info exists banned($k)]} { return 0 }
-    set until [dict get $banned($k) until]
-    expr {$until == 0 || $until > [::tg::now]}
+    expr {[check $ip] == 1}
 }
 
 # Add a weighted strike. Returns 1 if this strike caused a ban.
@@ -121,7 +146,7 @@ proc ::tg::ban::add {ip reason {sec ""} {source auto}} {
         ::tg::log::info "not banning allowlisted address $ip ($reason)"
         return 0
     }
-    set k [::tg::ip::key $ip]
+    set k [keyOf $ip]
     set t [::tg::now]
     set level 0
     if {$sec eq ""} {
@@ -143,6 +168,7 @@ proc ::tg::ban::add {ip reason {sec ""} {source auto}} {
     set info [dict create until $until since $t reason $reason level $level source $source]
     set banned($k) $info
     set dirty 1
+    if {[string first / $k] >= 0} { rebuildRanges }
     if {$isNew} {
         ::tg::stat::incr bans
         ::tg::log::alert "BANNED $k for [expr {$sec == 0 ? {ever} : [::tg::fmtDuration $sec]}]: $reason"
@@ -160,12 +186,13 @@ proc ::tg::ban::remove {ip {why manual}} {
     variable hist
     variable dirty
     variable onUnban
-    set k [::tg::ip::key $ip]
+    set k [keyOf $ip]
     if {![info exists banned($k)]} { return 0 }
     unset banned($k)
     unset -nocomplain score($k)
     if {$why eq "manual"} { unset -nocomplain hist($k) }
     set dirty 1
+    if {[string first / $k] >= 0} { rebuildRanges }
     ::tg::log::info "unbanned $k ($why)"
     foreach cb $onUnban {
         if {[catch {{*}$cb $k} err]} { ::tg::log::warn "unban callback failed: $err" }
@@ -196,7 +223,7 @@ proc ::tg::ban::all {} {
 
 proc ::tg::ban::lookup {ip} {
     variable banned
-    set k [::tg::ip::key $ip]
+    set k [keyOf $ip]
     if {[info exists banned($k)]} { return [dict create key $k {*}$banned($k)] }
     return {}
 }
@@ -270,6 +297,7 @@ proc ::tg::ban::load {} {
     } err]} {
         ::tg::log::warn "could not read saved bans from $file: $err"
     }
+    rebuildRanges
     return $restored
 }
 

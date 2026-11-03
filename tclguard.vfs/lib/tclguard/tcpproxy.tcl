@@ -36,11 +36,12 @@ namespace eval ::tg::tcp {
     variable bout
     variable st             ;# state: wait | connecting | open
     variable cdl            ;# backend connect deadline ms (own slot: must not clobber dl)
+    variable late           ;# client half-closed before the backend was ready: finish after flushing
     variable pend           ;# bytes waiting for the backend
     variable eofc           ;# half-close tracking "id,c2b" / "id,b2c"
     variable noted          ;# reputation already recorded
     variable mode
-    foreach v {cc bc cl cip cport ckey t0 act dl cdl bin bout st pend eofc noted mode} { array set $v {} }
+    foreach v {cc bc cl cip cport ckey t0 act dl cdl late bin bout st pend eofc noted mode} { array set $v {} }
     variable lastBackendWarn
     array set lastBackendWarn {}
     variable lastPublicWarn 0
@@ -187,14 +188,14 @@ proc ::tg::tcp::accept {name chan ip port} {
 proc ::tg::tcp::newConn {name L chan ip port key} {
     variable nextId
     variable cc; variable bc; variable cl; variable cip; variable cport; variable ckey
-    variable t0; variable act; variable dl; variable cdl; variable bin; variable bout; variable st
+    variable t0; variable act; variable dl; variable cdl; variable late; variable bin; variable bout; variable st
     variable pend; variable noted; variable mode
     variable nconn; variable perip; variable total
     set id [incr nextId]
     set now [::tg::now]
     set cc($id) $chan; set bc($id) ""; set cl($id) $name; set cip($id) $ip; set cport($id) $port
     set ckey($id) $key; set t0($id) $now; set act($id) $now; set bin($id) 0; set bout($id) 0
-    set st($id) wait; set pend($id) ""; set noted($id) 0; set dl($id) 0; set cdl($id) 0
+    set st($id) wait; set pend($id) ""; set noted($id) 0; set dl($id) 0; set cdl($id) 0; set late($id) 0
     set mode($id) [dict get $L type]
     incr nconn($name)
     incr total
@@ -262,7 +263,10 @@ proc ::tg::tcp::backendReady {id} {
     variable bc; variable cc; variable st; variable cl; variable cfg; variable cdl; variable mode
     if {![info exists bc($id)]} return
     set b $bc($id)
-    fileevent $b writable {}
+    if {[catch {fileevent $b writable {}}]} {
+        backendFailed $id "connect failed"
+        return
+    }
     if {[catch {fconfigure $b -error} e] || $e ne ""} {
         backendFailed $id [expr {$e eq "" ? "connect failed" : $e}]
         return
@@ -292,6 +296,10 @@ proc ::tg::tcp::backendReady {id} {
         fileevent $cc($id) readable [readerFor $id c2b]
     }
     fileevent $b readable [readerFor $id b2c]
+    # The client already finished sending (half-close) while we were connecting:
+    # everything it sent is now queued to the backend, so pass the half-close on.
+    variable late
+    if {$late($id)} { sideClosed $id c2b $cc($id) $b }
 }
 
 proc ::tg::tcp::backendFailed {id why} {
@@ -408,8 +416,14 @@ proc ::tg::tcp::resumed {id dir} {
 
 # One direction hit EOF: propagate as a half-close once pending data is flushed.
 proc ::tg::tcp::sideClosed {id dir from to} {
-    variable eofc; variable cc; variable bc
+    variable eofc; variable cc; variable bc; variable st; variable late
     fileevent $from readable {}
+    if {$dir eq "c2b" && $st($id) ne "open"} {
+        # Backend not connected yet: closing its write side now would lose the
+        # request that is waiting in the queue. backendReady finishes the job.
+        set late($id) 1
+        return
+    }
     set eofc($id,$dir) 1
     if {[info exists eofc($id,c2b)] && [info exists eofc($id,b2c)]} {
         close_ $id "finished"
@@ -438,7 +452,7 @@ proc ::tg::tcp::halfClose {id to} {
 
 proc ::tg::tcp::close_ {id {why ""}} {
     variable cc; variable bc; variable cl; variable cip; variable cport; variable ckey
-    variable t0; variable act; variable dl; variable cdl; variable bin; variable bout; variable st
+    variable t0; variable act; variable dl; variable cdl; variable late; variable bin; variable bout; variable st
     variable pend; variable noted; variable mode; variable eofc
     variable nconn; variable perip; variable total
     if {![info exists cc($id)]} return
@@ -460,7 +474,7 @@ proc ::tg::tcp::close_ {id {why ""}} {
     }
     if {[info exists nconn($name)]} { incr nconn($name) -1 }
     incr total -1
-    foreach v {cc bc cl cip cport ckey t0 act dl cdl bin bout st pend noted mode} { unset -nocomplain ${v}($id) }
+    foreach v {cc bc cl cip cport ckey t0 act dl cdl late bin bout st pend noted mode} { unset -nocomplain ${v}($id) }
     unset -nocomplain eofc($id,c2b) eofc($id,b2c)
 }
 

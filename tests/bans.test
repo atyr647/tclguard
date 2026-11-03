@@ -262,4 +262,50 @@ test level-callback {} -setup lv -body {
     set ::ev
 } -result {0->1 1->0}
 
+# ---- CIDR range bans ----
+test ban-cidr-membership {a manual range ban covers every address inside it} -setup fresh -body {
+    ::tg::ban::add 203.0.113.0/24 test 600 manual
+    list [::tg::ban::check 203.0.113.77] [::tg::ban::check 203.0.114.1] [::tg::ban::isBanned 203.0.113.255] [::tg::ban::check 203.0.113.0]
+} -result {1 0 1 1}
+
+test ban-cidr-normalised {host bits are cleared, lookup by any spelling} -setup fresh -body {
+    ::tg::ban::add 203.0.113.99/24 test 600 manual
+    list [lindex [::tg::ban::all] 0 1] [dict get [::tg::ban::lookup 203.0.113.0/24] reason] [::tg::ban::remove 203.0.113.5/24] [::tg::ban::check 203.0.113.77]
+} -result {203.0.113.0/24 test 1 0}
+
+test ban-cidr-expiry {} -setup fresh -body {
+    ::tg::ban::add 77.77.0.0/16 test 5 manual
+    set a [::tg::ban::check 77.77.1.1]
+    advance 6
+    ::tg::ban::tick [::tg::now]
+    list $a [::tg::ban::check 77.77.1.1] [::tg::ban::count]
+} -result {1 0 0}
+
+test ban-cidr-v6 {} -setup fresh -body {
+    ::tg::ban::add 2001:db8::/32 test 600 manual
+    list [::tg::ban::check 2001:db8:abcd::1] [::tg::ban::check 2001:db9::1]
+} -result {1 0}
+
+test ban-cidr-allowlist {allowlisted addresses inside a banned range stay reachable} -setup {fresh {allowlist {203.0.113.5}}} -body {
+    ::tg::ban::add 203.0.113.0/24 test 600 manual
+    list [::tg::ban::check 203.0.113.5] [::tg::ban::check 203.0.113.6]
+} -result {0 1}
+
+test ban-cidr-32 {a /32 is just an address} -setup fresh -body {
+    ::tg::ban::add 5.5.5.5/32 test 600 manual
+    list [lindex [::tg::ban::all] 0 1] [::tg::ban::check 5.5.5.5]
+} -result {5.5.5.5 1}
+
+test ban-cidr-persist {} -setup fresh -body {
+    set f [file join [makeDirectory bantest4] bans.db]
+    ::tg::ban::setFile $f
+    ::tg::ban::add 203.0.113.0/24 test 600 manual
+    ::tg::ban::save
+    array unset ::tg::ban::banned
+    ::tg::ip::setClear banrange
+    set ::tg::ban::hasRanges 0
+    ::tg::ban::load
+    ::tg::ban::check 203.0.113.9
+} -result 1
+
 cleanupTests

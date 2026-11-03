@@ -1,0 +1,43 @@
+# Packaging test: build a runtime+zip image from the system tclsh and run TclGuard's
+# self-test from inside the mounted payload. (A real starpack uses a tclkit as the
+# runtime; the payload and the zip trailer logic are identical.)
+source [file join [file dirname [info script]] helpers.tcl]
+package require vfs::zip
+
+set out [file join [makeDirectory pkg] tg-test.bin]
+
+test pkg-build {build zip payload with a runtime prefix} -body {
+    set rc [catch {exec tclsh8.6 [file join $::root build.tcl] --runtime [info nameofexecutable] --format zip --out $out --check 2>@1} msg]
+    list $rc [string match "*payload verified*" $msg]
+} -result {0 1}
+
+test pkg-valid-zip {image = executable prefix + valid zip, original runtime bytes intact} -body {
+    set fh [open [info nameofexecutable] rb]; set rt [read $fh]; close $fh
+    set fh [open $out rb]; set img [read $fh]; close $fh
+    list [expr {[string range $img 0 [expr {[string length $rt] - 1}]] eq $rt}] [expr {[string length $img] > [string length $rt]}] \
+         [expr {[string first "PK\x05\x06" $img] > [string length $rt]}]
+} -result {1 1 1}
+
+test pkg-run-from-payload {run the real application (selftest) out of the mounted payload} -body {
+    set script [file join [makeDirectory pkg] run.tcl]
+    set fh [open $script w]
+    puts $fh [subst -nocommands {
+        package require vfs::zip
+        vfs::zip::Mount [list $out] /tgmnt
+        set ::argv {selftest}
+        set ::tg_exit 1
+        source /tgmnt/main.tcl
+    }]
+    close $fh
+    set rc [catch {exec tclsh8.6 $script 2>@1} msg]
+    list [string match "*All 15 checks passed*" $msg] [string match "*package require starkit*" $msg]
+} -result {1 0}
+
+test pkg-no-test-files {tests are not shipped inside the payload} -body {
+    package require vfs::zip
+    set id [vfs::zip::Mount $out /tgmnt2]
+    set names [glob -nocomplain -directory /tgmnt2 *]
+    vfs::zip::Unmount $id /tgmnt2
+    expr {[lsearch -glob $names *tests*] < 0}
+} -result 1
+cleanupTests

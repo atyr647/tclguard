@@ -59,13 +59,15 @@ proc ::tg::engine::start {{quiet 0}} {
 }
 
 proc ::tg::engine::warnings {} {
-    foreach {n L} [::tg::cfg::listeners] {
-        if {![::tg::bool [dict get $L enabled]]} continue
-        set bh [dict get $L backendHost]
-        if {[dict get $L bind] in {0.0.0.0 ::} && $bh in {127.0.0.1 localhost ::1}} continue
-    }
     if {![::tg::fw::enabled]} {
         ::tg::log::warn "no kernel firewall in use: huge floods will still reach this process. Run as administrator/root for full protection."
+    }
+    # A protected backend that is reachable some other way defeats the point.
+    foreach {n L} [::tg::cfg::listeners] {
+        if {![::tg::bool [dict get $L enabled]]} continue
+        if {[dict get $L backendHost] in {0.0.0.0 ::}} {
+            ::tg::log::warn "listener '$n': backend host [dict get $L backendHost] is not a usable destination"
+        }
     }
 }
 
@@ -273,6 +275,16 @@ proc ::tg::engine::cmd {verb args} {
             }
         }
         stop      { after 100 {::tg::engine::stop; set ::tg::quit 1}; return "stopping" }
+        debug {
+            # sizes of internal tables: a steadily growing number after traffic stops is a leak
+            return [dict create \
+                tcpConns [array size ::tg::tcp::cc] tcpPerIp [array size ::tg::tcp::perip] \
+                httpState [array size ::tg::http::ps] httpBuf [array size ::tg::http::buf] \
+                udpSessions [array size ::tg::udp::sname] udpPerIp [array size ::tg::udp::perip] \
+                rateKeys [::tg::rate::size] strikes [array size ::tg::ban::score] bans [::tg::ban::count] \
+                trusted [::tg::trust::count] verified [array size ::tg::http::verified] \
+                openChannels [llength [chan names]]]
+        }
         ping      { return pong }
         default   { error "unknown command '$verb'" }
     }

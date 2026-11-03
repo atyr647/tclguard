@@ -56,6 +56,19 @@ try:
     r = http_raw(port, b"POST /big HTTP/1.1\r\nHost: x\r\nContent-Length: 3000000\r\nConnection: close\r\n\r\n", timeout=5)
     check("oversize Content-Length -> 413", status(r) == 413, r[:60])
 
+    # client sends the request and immediately half-closes (nc / HTTP/1.0 style): must still be answered
+    s = socket.create_connection(("127.0.0.1", port), 5); s.settimeout(5)
+    s.sendall(b"GET /halfclose HTTP/1.1\r\nHost: x\r\n\r\n"); s.shutdown(socket.SHUT_WR)
+    d = b""
+    try:
+        while True:
+            x = s.recv(4096)
+            if not x: break
+            d += x
+    except socket.timeout: pass
+    s.close()
+    check("request followed by client half-close is still answered", status(d) == 200 and b"ok:GET /halfclose" in d, d[:80])
+
     # ---- malformed / smuggling ----
     cases = [
       ("bare-LF header block",       b"GET / HTTP/1.1\nHost: x\n\n", 400),
