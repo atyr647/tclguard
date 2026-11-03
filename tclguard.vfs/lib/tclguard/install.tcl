@@ -39,9 +39,9 @@
 # WINDOWS: a running .exe cannot delete itself. Uninstall removes everything it can, then starts a
 # hidden, detached PowerShell that waits for this process to exit and deletes the locked files
 # (retrying for a minute) and then the install folder if it is empty. Installing over a running
-# copy works because Windows lets a running .exe be RENAMED: the old file becomes tclguard.exe.old,
-# the new one takes its name, and the .old file is removed the next time TclGuard starts
-# (::tg::update::cleanup) or on uninstall.
+# copy does NOT work: a running starpack holds its own file open in a way that forbids renaming and
+# overwriting it (measured on a real runner), so the install stops with a message asking to close the
+# running TclGuard first. (Leftover <name>.old files of older versions are still cleaned up.)
 
 namespace eval ::tg::install {
     variable runner ::tg::autostart::run          ;# {argv} -> {exitcode output}; tests replace it
@@ -642,7 +642,7 @@ proc ::tg::install::describeInstall {o L} {
     } elseif {[file isfile $bin] && ![catch {rawSame [dict get $L exe] $bin} same] && $same} {
         lappend steps "[nat $bin] is already this exact program; nothing to copy"
     } elseif {[file exists $bin]} {
-        lappend steps "Replace the installed program [nat $bin] with this one (the old copy is kept until it is no longer running[expr {$plat eq {windows} ? {: it is renamed to tclguard.exe.old} : {}}])"
+        lappend steps "Replace the installed program [nat $bin] with this one (a running copy keeps using the old version until it is restarted[expr {$plat eq {windows} ? {; Windows refuses to replace a program while it runs, so close TclGuard first} : {}}])"
     } else {
         lappend steps "Copy this program to [nat $bin]"
     }
@@ -765,22 +765,23 @@ proc ::tg::install::copyProgram {o L mVar} {
         rawCopy $src $tmp
         catch { file attributes $tmp -permissions 0755 }
         if {![rawSame $src $tmp]} { error "the copy to $tmp does not match the original (disk full?)" }
-        if {[isWin] && [file exists $dst]} {
-            # a running .exe cannot be overwritten or deleted, but it can be renamed
-            set old "$dst.old"
-            if {[file exists $old] && [catch {file delete -force -- $old}]} { set old "$dst.old[pid]" }
-            file rename -force -- $dst $old
-            if {[catch {file rename -force -- $tmp $dst} err]} {
-                catch {file rename -force -- $old $dst}
-                error $err
-            }
-        } else {
-            file rename -force -- $tmp $dst
-        }
+        putInPlace $tmp $dst
     } finally {
         catch { file delete -force -- $tmp }
     }
     addItem m [dict create type binary path $dst]
+}
+
+# Replace dst with tmp (same folder). On Windows a TclGuard that is running from dst keeps the file locked (a
+# running starpack holds its own file open, so it cannot be renamed, overwritten or deleted: measured on a real
+# runner), and the answer is to say so instead of leaving a half-done install.
+proc ::tg::install::putInPlace {tmp dst} {
+    if {[catch {file rename -force -- $tmp $dst} err]} {
+        if {[isWin] && [file exists $dst]} {
+            error "[nat $dst] is in use: a TclGuard started from it is running, and Windows does not let a running program be replaced. Close TclGuard (also check Task Manager and the TclGuard scheduled task) and run the installation again. ($err)"
+        }
+        error $err
+    }
 }
 
 proc ::tg::install::writeShortcut {lnk target} {

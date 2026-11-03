@@ -147,12 +147,12 @@ proc ::tg::udp::inbound {name} {
         if {!$priv} {
             set pk "$name,$key"
             set cur [expr {[info exists perip($pk)] ? $perip($pk) : 0}]
-            if {$cur >= [::tg::tcp::scaled [dict get $L maxSessionsPerIP]]} {
+            if {$cur >= [::tg::tcp::scaled [dict get $L maxSessionsPerIP] $ip]} {
                 drop $ip $key $ban 1 "too many UDP sessions from one address on $name"
                 return
             }
             set win [expr {[dict get $L newSessionWindow] * 1000}]
-            if {[::tg::rate::hit "us:$name:$key" $win] > [::tg::tcp::scaled [dict get $L newSessionRate]]} {
+            if {[::tg::rate::hit "us:$name:$key" $win] > [::tg::tcp::scaled [dict get $L newSessionRate] $ip]} {
                 drop $ip $key $ban 1 "UDP session rate on $name"
                 return
             }

@@ -29,7 +29,7 @@ jobs:
         run: cd tests/gui && xvfb-run -a -s "-screen 0 1300x900x24" wish8.6 smoke.tcl
       - name: Integration tests (real sockets)
         if: ${{ !cancelled() }}
-        run: cd tests/integration && python3 -u test_http.py && python3 -u test_features.py && python3 -u test_update.py
+        run: cd tests/integration && python3 -u test_http.py && python3 -u test_features.py && python3 -u test_update.py && python3 -u test_reserve.py
       - name: HTTP parser fuzzer (deterministic smoke run with smuggling, liveness and CPU oracles)
         if: ${{ !cancelled() }}
         run: python3 -u tests/fuzz/fuzz.py ci
@@ -245,13 +245,12 @@ jobs:
           make -j4 && make install
           find $HOME/tclpkgs -name 'pkgIndex.tcl' | head -3
           echo "TCLLIBPATH=$(dirname $(find $HOME/tclpkgs -name pkgIndex.tcl | head -1))/.." >> "$GITHUB_ENV"
-      - name: Build the tls extension (tcltls) against OpenSSL 3
+      - name: Build the tls extension (tcltls 2.0.1; 1.7.22 crashes in tls::import on macOS) against OpenSSL 3
         run: |
           brew install openssl@3
-          curl -fsSL -o tcltls.tgz "https://core.tcl-lang.org/tcltls/uv/tcltls-1.7.22.tar.gz"
-          echo "e84e2b7a275ec82c4aaa9d1b1f9786dbe4358c815e917539ffe7f667ff4bc3b4  tcltls.tgz" | shasum -a 256 -c -
-          dir=$(tar tzf tcltls.tgz | head -1 | cut -d/ -f1)
-          tar xzf tcltls.tgz && cd "$dir"
+          curl -fsSL -o tcltls.zip "https://core.tcl-lang.org/tcltls/zip/tcltls.zip?uuid=tls-2.0.1"
+          echo "abfd8b765176abf7baf014fdbfea85985adcb7c013933fa29262df1187dceee9  tcltls.zip" | shasum -a 256 -c -
+          unzip -q tcltls.zip && cd tcltls
           ./configure --with-tcl=/opt/homebrew/opt/tcl-tk@8/lib --with-openssl-dir=$(brew --prefix openssl@3) --prefix=$HOME/tclpkgs
           make -j4 && make install
           echo "TCLLIBPATH=$TCLLIBPATH $(dirname $(find $HOME/tclpkgs -path '*tcltls*' -name pkgIndex.tcl | head -1))/.." >> "$GITHUB_ENV"

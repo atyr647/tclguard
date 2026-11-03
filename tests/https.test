@@ -13,7 +13,7 @@ if {!$::skip} {
     set fh [open [file join $dir key.pem] w]; puts -nonewline $fh [::tg::crypto::keyToPem $k]; close $fh
     set fh [open [file join $dir cert.pem] w]; puts -nonewline $fh [::tg::crypto::selfSigned $k {localhost}]; close $fh
     set port [expr {20000 + [pid] % 20000}]
-    set srv [open [list |$openssl s_server -accept $port -cert [file join $dir cert.pem] -key [file join $dir key.pem] -www -quiet 2>@1] r]
+    set srv [open [concat | $openssl [list s_server -accept $port -cert [file join $dir cert.pem] -key [file join $dir key.pem] -www -quiet 2>@1]] r]
     after 800
     ::tg::https::setCaFile [file join $dir cert.pem]
 }

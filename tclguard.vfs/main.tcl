@@ -406,12 +406,15 @@ proc cmdUpdate {argv} {
             if {![dict get $r ok]} { die "update failed: [dict get $r error]" }
             if {[dict get $r status] eq "uptodate"} { puts "TclGuard [dict get $r old] is already the newest release."; return }
             puts "Updated TclGuard [dict get $r old] -> [dict get $r new]. The old program was kept as [dict get $r backup] ('tclguard update rollback' restores it)."
+            if {[dict get $r deferred]} {
+                puts "The new program is put in place a moment after this one exits (Windows keeps a running program locked)."
+            }
             puts "Restart TclGuard to run the new version."
         }
         rollback {
             set r [::tg::update::rollback $opts]
             if {![dict get $r ok]} { die "rollback failed: [dict get $r error]" }
-            puts "Restored the previous program (version [dict get $r new]). Restart TclGuard to use it."
+            puts "Restored the previous program (version [dict get $r new]). Restart TclGuard to use it.[expr {[dict get $r deferred] ? { (It is put in place a moment after this one exits.)} : {}}]"
         }
         default { die "usage: tclguard update check|apply|rollback|status|keygen" }
     }

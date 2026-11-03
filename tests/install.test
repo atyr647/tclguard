@@ -548,15 +548,25 @@ test inst-win-shortcut-folder-from-windows {the real Start Menu folder is asked 
          [string match "*GetFolderPath('Programs')*" [::tg::install::psDecode [lindex $::cmds 0]]]
 } -result {1 1}
 
-test inst-win-replace-running {installing over a running copy renames it to .old instead of failing, then cleans on next install} -setup {
+test inst-win-replace {installing a newer program over an installed one that nobody runs replaces it directly} -setup {
     set d [winSandbox]
     ::tg::install::run {scope user}
     set bin $d/AppData/Local/Programs/TclGuard/tclguard.exe
     writeBytes $d/src/tclguard-windows.exe "MZ fake exe version 2 (bigger)\n"
 } -body {
     set e [::tg::install::run {scope user}]
-    list $e [readBytes $bin] [readBytes $bin.old] [llength [glob -nocomplain $bin.new*]]
-} -result "{} {MZ fake exe version 2 (bigger)\n} {MZ fake exe\n} 0"
+    list $e [readBytes $bin] [file exists $bin.old] [llength [glob -nocomplain $bin.new*]]
+} -result "{} {MZ fake exe version 2 (bigger)\n} 0 0"
+
+test inst-win-replace-running {when Windows refuses the replacement (the installed copy is running) the message says why and the old program stays} -setup {
+    set d [winSandbox]
+    ::tg::install::run {scope user}
+    set bin $d/AppData/Local/Programs/TclGuard/tclguard.exe
+} -body {
+    # a rename that fails while the destination exists is what Windows reports for a running starpack
+    set e [catch {::tg::install::putInPlace $d/no-such-new-file $bin} msg]
+    list $e [string match "*is in use*a TclGuard started from it is running*Close TclGuard*" $msg] [readBytes $bin]
+} -result "1 1 {MZ fake exe\n}"
 
 test inst-win-uninstall-running {uninstalling from the installed exe defers its deletion to a detached hidden helper} -setup {
     set d [winSandbox]

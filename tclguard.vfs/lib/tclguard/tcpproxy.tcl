@@ -80,8 +80,15 @@ proc ::tg::tcp::computeMaxTotal {} {
     return $want
 }
 
-proc ::tg::tcp::scaled {value} {
-    set v [expr {int($value * [::tg::level::factor])}]
+# A per-address limit, tightened by the threat level. Visitors the guard already knows to be well-behaved
+# (they completed ordinary requests before) are held to the limit of one level lower: when a flood from
+# strangers tightens everything, the people who were already using the service are the last to feel it
+# (measured: with the same factor for everyone, 16 steady visitors at 16 requests/s each were all banned
+# within 8 seconds of an "under attack" level, while the attackers cost the guard the same either way).
+proc ::tg::tcp::scaled {value {ip ""}} {
+    set f [::tg::level::factor]
+    if {$ip ne "" && [::tg::level::get] > 0 && [::tg::trust::known $ip]} { set f [::tg::level::factor [expr {[::tg::level::get] - 1}]] }
+    set v [expr {int($value * $f)}]
     expr {max(1, $v)}
 }
 
@@ -172,23 +179,31 @@ proc ::tg::tcp::accept {name chan ip port} {
     }
     set privileged [::tg::ban::isAllowed $ip]
     # UDP sessions hold a descriptor too: count two of them as one proxied connection
-    if {$total + ($::tg::udp::total / 2) >= $maxTotal} {
+    set inUse [expr {$total + ($::tg::udp::total / 2)}]
+    if {$inUse >= $maxTotal} {
         reject $chan $name $ip $key "global connection cap"
         return
     }
     if {!$privileged} {
+        # The last quarter of the global cap is kept for visitors the guard already knows. A slow-drip attack from
+        # many addresses can otherwise hold every slot (measured: 1500 slow connections from 300 addresses made 4,000
+        # of an ordinary visitor's attempts fail); with this, the people who were already using the service still get in.
+        if {$inUse >= int($maxTotal * 0.75) && ![::tg::trust::known $ip]} {
+            reject $chan $name $ip $key "capacity reserved for returning visitors"
+            return
+        }
         if {[::tg::level::get] >= 3 && ![::tg::trust::known $ip]} {
             reject $chan $name $ip $key "lockdown"
             return
         }
         set pk "$name,$key"
         set cur [expr {[info exists perip($pk)] ? $perip($pk) : 0}]
-        if {$cur >= [scaled [dict get $L maxConnsPerIP]]} {
+        if {$cur >= [scaled [dict get $L maxConnsPerIP] $ip]} {
             reject $chan $name $ip $key "too many connections" 1
             return
         }
         set win [expr {[dict get $L connWindow] * 1000}]
-        if {[::tg::rate::hit "c:$name:$key" $win] > [scaled [dict get $L connRate]]} {
+        if {[::tg::rate::hit "c:$name:$key" $win] > [scaled [dict get $L connRate] $ip]} {
             reject $chan $name $ip $key "connection rate" 1
             return
         }

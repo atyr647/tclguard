@@ -26,7 +26,7 @@ selftest:
 	$(TCLSH) tclguard.vfs/main.tcl selftest
 
 integration:
-	cd tests/integration && python3 test_http.py && python3 test_features.py && python3 test_update.py
+	cd tests/integration && python3 test_http.py && python3 test_features.py && python3 test_update.py && python3 test_reserve.py
 
 fuzz:
 	python3 tests/fuzz/fuzz.py ci

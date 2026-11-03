@@ -1,5 +1,5 @@
 source [file join [file dirname [info script]] helpers.tcl]
-loadmods util config bans
+loadmods util config bans limiter tcpproxy
 set ::tg::log::stderr 0
 freezeClock
 
@@ -307,5 +307,19 @@ test ban-cidr-persist {} -setup fresh -body {
     ::tg::ban::load
     ::tg::ban::check 203.0.113.9
 } -result 1
+
+
+# ---- limits scaled by the threat level: visitors the guard already trusts feel it one level later ----
+test scaled-strangers-vs-known {strangers get the level's factor, known-good visitors the previous level's} -setup {
+    lv
+    ::tg::trust::note 20.1.2.3
+} -body {
+    set r {}
+    foreach l {0 1 2 3} {
+        set ::tg::level::lvl $l
+        lappend r [list [::tg::tcp::scaled 100] [::tg::tcp::scaled 100 20.9.9.9] [::tg::tcp::scaled 100 20.1.2.3]]
+    }
+    set r
+} -result {{100 100 100} {60 60 100} {35 35 60} {20 20 35}}
 
 cleanupTests

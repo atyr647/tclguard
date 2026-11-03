@@ -425,7 +425,7 @@ proc ::tg::http::handleRequest {id block} {
     if {!$privileged} {
         # per-IP request rate
         set rw [expr {[dict get $Lc reqWindow] * 1000}]
-        if {[::tg::rate::hit "r:$lname:$ckey" $rw] > [::tg::tcp::scaled [dict get $Lc reqRate]]} {
+        if {[::tg::rate::hit "r:$lname:$ckey" $rw] > [::tg::tcp::scaled [dict get $Lc reqRate] $cip]} {
             ::tg::ban::strike $cip 2 "request flood on $lname"
             blockedReq $id $ckey
             respondRaw $id 429 "Too Many Requests" "Slow down." "Retry-After: [dict get $Lc reqWindow]\r\n"

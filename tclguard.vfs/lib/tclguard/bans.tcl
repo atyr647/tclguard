@@ -418,10 +418,11 @@ proc ::tg::level::name {{l ""}} {
 proc ::tg::level::isManual {} { variable manual; expr {$manual >= 0} }
 
 # Multiplier applied to every per-IP limit (lower = stricter).
-proc ::tg::level::factor {} {
+proc ::tg::level::factor {{l ""}} {
     variable factors
     variable lvl
-    lindex $factors $lvl
+    if {$l eq ""} { set l $lvl }
+    lindex $factors $l
 }
 
 proc ::tg::level::registerOnChange {cmd} { variable onChange; if {$cmd ni $onChange} { lappend onChange $cmd } }

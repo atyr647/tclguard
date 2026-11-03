@@ -131,20 +131,22 @@ proc scenario {scope} {
     set err [::tg::install::run $opts]
     check "installing again is fine and changes nothing" [expr {$err eq "" && [file mtime $inst] == $before}] $err
 
-    phase "$scope: replacing a RUNNING copy"
+    phase "$scope: installing over a RUNNING copy"
     set sleeper [file join $tmp tg-sleeper.tcl]
     set fh [open $sleeper w]; puts $fh {after 60000 {set ::done 1}; vwait ::done}; close $fh
     set pidRun [exec $inst eval $sleeper &]
     after 3000
     set newer [anExecutableCopy tg-newer.exe "\0padding"]
+    set sizeBefore [file size $inst]
     set ::tg::install::exeOverride $newer
     set err [::tg::install::run $opts]
-    set ::tg::install::exeOverride ""
-    check "installing over a running copy succeeds" [expr {$err eq ""}] $err
-    check "the running copy was renamed to .old, not killed or overwritten" [file exists "$inst.old"]
-    check "the installed file is now the new one" [expr {[file size $inst] == [file size $newer]}]
+    check "installing over a copy that is running is refused with advice (Windows keeps a running program locked)" [expr {[string match "*is in use*" $err] && [string match "*Close TclGuard*" $err]}] $err
+    check "...and the running copy is untouched, no temporary files are left" [expr {[file size $inst] == $sizeBefore && ![llength [glob -nocomplain "$inst.new*"]]}]
     catch {exec taskkill /F /PID $pidRun}
     check "the old running copy ended" [waitProcessGone $pidRun 30]
+    set err [::tg::install::run $opts]
+    set ::tg::install::exeOverride ""
+    check "after it ended the install replaces the program" [expr {$err eq "" && [file size $inst] == [file size $newer]}] $err
 
     phase "$scope: uninstall from another copy"
     set cfgBefore [file exists [file join $data tclguard.conf]]
@@ -156,7 +158,7 @@ proc scenario {scope} {
     check "uninstall plan lists the items" [expr {[llength $steps] >= 6}] $steps
     set err [::tg::install::uninstall [list scope $scope keepData yes]]
     check "uninstall (keep data) succeeds" [expr {$err eq ""}] $err
-    check "program and .old are gone" [expr {![file exists $inst] && ![file exists "$inst.old"]}]
+    check "program is gone" [expr {![file exists $inst]}]
     check "install folder is gone" [expr {![file exists $dir]}] $dir
     check "shortcuts are gone" [expr {![file exists $menu] && ![file exists $desk]}]
     lassign [regQuery $regkey] rc out
@@ -229,16 +231,29 @@ if {[want update]} { rawCall "update mechanics" {
     ::tg::nfs::copy $exe $newer
     set fh [open $newer ab]; puts -nonewline $fh "\0update"; close $fh
     set orig [file size $target]
+    # (1) another process runs the file: Windows keeps a running starpack locked, so the swap is refused clearly
     set e [catch {::tg::update::swapIn $newer $target} msg]
-    check "swapIn replaces a RUNNING exe (rename to .old)" [expr {!$e}] $msg
-    check "the new file is in place" [expr {[file size $target] == $orig + 7}]
-    check ".old (the running one) and .previous both exist" [expr {[file exists $target.old] && [file exists $target.previous] && [file size $target.previous] == $orig}]
+    check "replacing a file another running TclGuard holds is refused, with advice" [expr {$e && [string match "*close it first*" $msg]}] $msg
+    check "...and the running program is untouched" [expr {[file size $target] == $orig}]
+    # (2) the target is THIS program (pretend it is): a helper does the swap after the process exits
+    set ::tg::install::exeOverride $target
+    set ::tg::update::swapWaitPid $pidRun
+    set r [catch {::tg::update::swapIn $newer $target} msg]
+    set ::tg::install::exeOverride ""
+    set ::tg::update::swapWaitPid ""
+    check "swapIn of the running program is deferred to a helper" [expr {!$r && $msg eq "deferred"}] $msg
+    after 3000
+    check "while the program runs nothing is touched" [expr {[file size $target] == $orig && [file exists $newer]}]
+    check ".previous holds the old program" [expr {[file exists $target.previous] && [file size $target.previous] == $orig}]
     catch {exec taskkill /F /PID $pidRun}
     check "the old running copy ended" [waitProcessGone $pidRun 30]
+    set ok 0
+    for {set i 0} {$i < 60 && !$ok} {incr i} { after 500; set ok [expr {[file size $target] == $orig + 7 && ![file exists $newer]}] }
+    check "within 30 s of the exit the helper has put the new program in place" $ok
     set ::tg::update::targetOverride $target
     set n [::tg::update::cleanup]
     set ::tg::update::targetOverride ""
-    check "cleanup removes .old once nothing runs it" [expr {$n >= 1 && ![file exists $target.old]}] $n
+    puts "INFO cleanup removed $n leftover(s)"
     catch {file delete -force $target $target.previous $newer}
 } }
 finish

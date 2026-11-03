@@ -23,7 +23,7 @@
 #     enforced WHILE downloading.
 #   * While the embedded key is the UNSET placeholder, `apply` refuses and `check` marks results unverified.
 #   * Swap: the new file is written next to the old one, then renamed into place (Unix: atomic rename;
-#     Windows: the running exe is renamed to <name>.old first, which Windows allows). The old program is
+#     Windows: a running starpack cannot be renamed, so a hidden helper does the rename once the program has exited). The old program is
 #     kept as <name>.previous (rollback). Every failure path leaves the old program untouched and removes
 #     the temporary file.
 #
@@ -653,10 +653,32 @@ proc ::tg::update::versionOf {text} {
     return ""
 }
 
+# Windows: a running starpack cannot be renamed, overwritten or deleted. It keeps its own file open to read
+# the virtual file system it carries, and that handle forbids all three (measured on a real runner with
+# tests/platform/windows_lock_probe.ps1: reading and copying work, renaming fails with "being used by another
+# process", while an ordinary running .exe can be renamed). So when the program being replaced IS this
+# process, the final rename is done by a small hidden PowerShell that waits for this process to exit.
+# Test hook: swapWaitPid names the process the helper waits for instead of this one.
+namespace eval ::tg::update { variable swapWaitPid "" }
+
+proc ::tg::update::swapHelperScript {waitPid src dst} {
+    join [list \
+        "\$ErrorActionPreference = 'SilentlyContinue'" \
+        "Wait-Process -Id $waitPid -Timeout 120" \
+        "\$done = \$false" \
+        "for (\$i = 0; \$i -lt 120 -and -not \$done; \$i++) {" \
+        "  try { Move-Item -LiteralPath [::tg::install::psq $src] -Destination [::tg::install::psq $dst] -Force -ErrorAction Stop; \$done = \$true } catch { Start-Sleep -Milliseconds 500 }" \
+        "}" \
+        "if (-not \$done) { Remove-Item -LiteralPath [::tg::install::psq $src] -Force }" \
+        ] "\n"
+}
+
 # Put newFile in place of target, keeping the old program as target.previous. newFile must be a
 # complete, verified file in the SAME directory (so the final step is a rename). On failure the old
-# program is untouched.
+# program is untouched. Returns "deferred" when the swap happens after this process exits (Windows,
+# replacing the running program), otherwise "".
 proc ::tg::update::swapIn {newFile target} {
+    variable swapWaitPid
     set prev $target.previous
     set tmpPrev $target.prev[pid]
     try {
@@ -667,17 +689,22 @@ proc ::tg::update::swapIn {newFile target} {
         error "could not keep the old program as $prev: $e"
     }
     if {$::tcl_platform(platform) eq "windows"} {
-        # a running .exe cannot be overwritten or deleted, but it can be renamed
-        set old $target.old
-        if {[file exists $old] && [catch {file delete -force -- $old}]} { set old $target.old[pid] }
-        if {[catch {::tg::nfs::move $target $old} e]} { error "could not move the running program aside: $e" }
-        if {[catch {::tg::nfs::move $newFile $target} e]} {
-            catch { ::tg::nfs::move $old $target }
-            error "could not put the new program in place: $e"
+        if {[::tg::install::sameFile $target [::tg::install::runningExe]]} {
+            set wp [expr {$swapWaitPid ne "" ? $swapWaitPid : [pid]}]
+            set script [swapHelperScript $wp [file nativename $newFile] [file nativename $target]]
+            if {[set e [::tg::install::spawn [::tg::install::psArgv $script]]] ne ""} {
+                error "could not start the helper that puts the new program in place: $e"
+            }
+            return deferred
         }
-    } else {
-        if {[catch {::tg::nfs::move $newFile $target} e]} { error "could not put the new program in place: $e" }
+        # not this process: a file nobody runs is simply replaced; one that another TclGuard runs is refused
+        if {[catch {::tg::nfs::move $newFile $target} e]} {
+            error "could not put the new program in place: $e. If a TclGuard started from $target is running, close it first (Windows does not let a running program be replaced)."
+        }
+        return ""
     }
+    if {[catch {::tg::nfs::move $newFile $target} e]} { error "could not put the new program in place: $e" }
+    return ""
 }
 
 # Executable bit: keep the old program's permissions, make sure the owner may run it.
@@ -757,13 +784,13 @@ proc ::tg::update::applyInner {opts} {
         if {$got ne $new} { error "the new program reports version '$got' instead of $new; the old one was kept" }
         # 6. swap
         progress $prog install 0 0
-        swapIn $tmp $target
+        set deferred [swapIn $tmp $target]
         set done 1
     } finally {
         if {!$done} { catch { file delete -force -- $tmp } }
     }
     catch { updateState lastApplied [nowSec] appliedFrom $::tg::VERSION appliedTo $new previousVersion $::tg::VERSION pendingRestart 1 }
-    dict create ok 1 status applied old $::tg::VERSION new $new target $target backup $target.previous restart 1
+    dict create ok 1 status applied old $::tg::VERSION new $new target $target backup $target.previous restart 1 deferred [expr {$deferred eq "deferred"}]
 }
 
 # ============================================================================== rollback ====
@@ -789,13 +816,13 @@ proc ::tg::update::rollbackInner {opts} {
         lassign [runVersion $tmp] ok text
         if {!$ok} { error "the previous program does not run on this machine ($text); nothing was changed" }
         set was [versionOf $text]
-        swapIn $tmp $target
+        set deferred [swapIn $tmp $target]
         set done 1
     } finally {
         if {!$done} { catch { file delete -force -- $tmp } }
     }
     catch { updateState lastRollback [nowSec] previousVersion $::tg::VERSION pendingRestart 1 }
-    dict create ok 1 old $::tg::VERSION new $was target $target restart 1
+    dict create ok 1 old $::tg::VERSION new $was target $target restart 1 deferred [expr {$deferred eq "deferred"}]
 }
 
 # ======================================================================== status, auto ====

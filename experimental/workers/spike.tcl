@@ -7,7 +7,7 @@ package require Thread
 set root [file normalize [file join [file dirname [info script]] .. ..]]
 lassign $argv N port bport
 set init [subst -nocommands {
-    foreach m {util config bans limiter tcpproxy httpproxy} { source -encoding utf-8 [file join $root tclguard.vfs lib tclguard \$m.tcl] }
+    foreach m {util config crypto json httpsclient bans limiter tcpproxy tlsproxy httpproxy} { source -encoding utf-8 [file join $root tclguard.vfs lib tclguard \$m.tcl] }
     namespace eval ::tg::udp { variable total 0 }   ;# the udp module is not loaded in this experiment
     set ::tg::log::stderr 1; ::tg::log::setLevel warn
     set c [::tg::cfg::new]

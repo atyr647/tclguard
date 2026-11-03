@@ -95,17 +95,28 @@ t0 = time.time()
 rc, out = sh(*XV, OLD, "update", "apply", "--url", feed, env=env, timeout=900)
 check("update apply succeeds when the program replaces itself", rc == 0 and "Updated TclGuard 1.0.0 -> 1.0.1" in out, out[-500:])
 print(f"INFO apply took {time.time() - t0:.0f} s")
-check("the program file now IS the new release, byte for byte", sha(OLD) == new_hash)
+if win:
+    check("Windows says the swap happens after the program exits", "a moment after this one exits" in out, out[-300:])
+    check("...and until then the running file was not touched, .previous is already there", os.path.exists(OLD + ".previous"))
+def wait_for(pred, secs=40):
+    end = time.time() + secs
+    while time.time() < end:
+        if pred(): return True
+        time.sleep(0.5)
+    return pred()
+# (on Windows a running starpack cannot rename itself, so a hidden helper puts the new file in place after the exit)
+check("the program file now IS the new release, byte for byte", wait_for(lambda: sha(OLD) == new_hash))
 check("the old program was kept as .previous, byte for byte", os.path.exists(OLD + ".previous") and sha(OLD + ".previous") == old_hash)
 rc, out = sh(*XV, OLD, "version")
 check("the updated program reports 1.0.1", "1.0.1" in out, out)
+check("no helper-pending file is left", wait_for(lambda: not [f for f in os.listdir(os.path.dirname(OLD)) if ".new" in f]))
 leftovers = [f for f in os.listdir(os.path.dirname(OLD)) if f not in ("tg" + EXT, "tg" + EXT + ".previous", "tg" + EXT + ".old", "build.tcl", "tclguard.vfs", "runtime" + EXT, "dist")]
 check("no temporary files are left beside it", not leftovers, leftovers)
 rc, out = sh(*XV, OLD, "update", "rollback", env=env)
 check("update rollback restores the previous program", rc == 0 and "Restored" in out, out)
+check("...byte for byte", wait_for(lambda: sha(OLD) == old_hash))
 rc, out = sh(*XV, OLD, "version")
 check("...and it runs as 1.0.0 again", "1.0.0" in out, out)
-check("...byte for byte", sha(OLD) == old_hash)
 
 srv.shutdown()
 try: shutil.rmtree(W, ignore_errors=True)

@@ -6,7 +6,7 @@ if {$::tcl_platform(platform) eq "windows"} {
 }
 loadmods util config crypto json
 # update.tcl uses ::http only inside fetch, which these tests replace with an in-memory server.
-loadmods install nativefs update
+loadmods autostart install nativefs update
 set ::tg::log::stderr 0
 freezeClock
 
@@ -655,34 +655,55 @@ test upd-apply-from-source-refused {running from source (no starpack, no target)
     list [dict get $r ok] [string match "*running from source*" [dict get $r error]] [llength $::fetched]
 } -cleanup {if {$had} { set ::starkit::topdir $saved }} -result {0 1 0}
 
-test upd-windows-swap {the Windows path renames the running program to .old, keeps .previous and restores on failure} -setup {
+test upd-windows-swap-other {Windows, replacing a file this process is not running: replaced directly, .previous kept, failures reported} -setup {
     resetEnv; set d [target]
     set savedPlat $::tcl_platform(platform)
     set ::tcl_platform(platform) windows
+    set ::tg::install::exeOverride /somewhere/else.exe
 } -body {
     set new [fakeProgram 1.1.0]
     writeBytes $d/app.new77 $new
-    ::tg::update::swapIn $d/app.new77 $d/app
-    set out [list [listing $d] [expr {[readBytes $d/app.old] eq [fakeProgram 1.0.0]}] [expr {[readBytes $d/app.previous] eq [fakeProgram 1.0.0]}] [expr {[readBytes $d/app] eq $new}]]
-    # a leftover .old from an earlier update does not block the next one
-    writeBytes $d/app.new78 [fakeProgram 1.2.0]
-    ::tg::update::swapIn $d/app.new78 $d/app
-    lappend out [expr {[readBytes $d/app.old] eq $new}] [expr {[readBytes $d/app] eq [fakeProgram 1.2.0]}]
-    # failure while moving the new file in: the running program is put back
+    set r1 [::tg::update::swapIn $d/app.new77 $d/app]
+    set out [list $r1 [listing $d] [expr {[readBytes $d/app.previous] eq [fakeProgram 1.0.0]}] [expr {[readBytes $d/app] eq $new}]]
+    # another TclGuard keeps the file locked: the message says what to do and the program is untouched
     writeBytes $d/app.newtest "x"
     rename ::tg::nfs::move ::tg::nfs::move_orig
     proc ::tg::nfs::move {src dst} {
-        if {$src eq "$::d/app.newtest"} { error "access denied" }
+        if {$src eq "$::d/app.newtest"} { error "The process cannot access the file because it is being used by another process." }
         tailcall ::tg::nfs::move_orig $src $dst
     }
     set e [catch {::tg::update::swapIn $d/app.newtest $d/app} msg]
     rename ::tg::nfs::move {}
     rename ::tg::nfs::move_orig ::tg::nfs::move
-    lappend out $e [string match "*could not put the new program in place*" $msg] [expr {[readBytes $d/app] eq [fakeProgram 1.2.0]}]
+    lappend out $e [string match "*could not put the new program in place*close it first*" $msg] [expr {[readBytes $d/app] eq $new}]
 } -cleanup {
     set ::tcl_platform(platform) $savedPlat
+    set ::tg::install::exeOverride ""
     if {[llength [info commands ::tg::nfs::move_orig]]} { rename ::tg::nfs::move {}; rename ::tg::nfs::move_orig ::tg::nfs::move }
-} -result [list {app app.old app.previous} 1 1 1 1 1 1 1 1]
+} -result [list "" {app app.previous} 1 1 1 1 1]
+
+test upd-windows-swap-self {Windows, replacing the running program: a helper does it after this process exits; nothing is touched meanwhile} -setup {
+    resetEnv; set d [target]
+    set savedPlat $::tcl_platform(platform)
+    set ::tcl_platform(platform) windows
+    set ::tg::install::exeOverride $d/app
+    set ::tg::update::swapWaitPid 4242
+    set ::spawnedArgv {}
+    set savedSpawner $::tg::install::spawner
+    set ::tg::install::spawner {apply {{argv} { lappend ::spawnedArgv $argv; return "" }}}
+} -body {
+    writeBytes $d/app.new77 [fakeProgram 1.1.0]
+    set r [::tg::update::swapIn $d/app.new77 $d/app]
+    set script [::tg::install::psDecode [lindex $::spawnedArgv 0]]
+    list $r [expr {[readBytes $d/app] eq [fakeProgram 1.0.0]}] [file exists $d/app.new77] [expr {[readBytes $d/app.previous] eq [fakeProgram 1.0.0]}] \
+        [llength $::spawnedArgv] [string match "*Wait-Process -Id 4242*" $script] \
+        [string match "*Move-Item -LiteralPath '[file nativename $d/app.new77]' -Destination '[file nativename $d/app]' -Force*" $script]
+} -cleanup {
+    set ::tcl_platform(platform) $savedPlat
+    set ::tg::install::exeOverride ""
+    set ::tg::update::swapWaitPid ""
+    set ::tg::install::spawner $savedSpawner
+} -result {deferred 1 1 1 1 1 1}
 
 test upd-apply-new-over-previous {a second update replaces .previous with the version it replaced} -setup {resetEnv; set d [target]} -body {
     publish 1.1.0 [fakeProgram 1.1.0]
