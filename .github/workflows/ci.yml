@@ -326,6 +326,9 @@ jobs:
           xattr -cr releases/tclguard-macos-arm64 || true     # (what a person does with a download: remove the quarantine flag)
           releases/tclguard-macos-arm64 version
           releases/tclguard-macos-arm64 selftest
+      - name: Released starpack - the installer installs the single file, and the installed copy removes itself
+        if: ${{ !cancelled() }}
+        run: releases/tclguard-macos-arm64 eval tests/platform/macos_install_starpack_test.tcl
       - name: Released starpack - integration, TLS (its own tcltls 2.0.1 + OpenSSL), updates, descriptors
         if: ${{ !cancelled() }}
         run: |
