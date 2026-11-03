@@ -24,7 +24,7 @@ jobs:
       - name: GUI smoke test (Xvfb)
         run: cd tests/gui && xvfb-run -a -s "-screen 0 1300x900x24" wish8.6 smoke.tcl
       - name: Integration tests (real sockets)
-        run: cd tests/integration && python3 -u test_http.py && python3 -u test_features.py
+        run: cd tests/integration && python3 -u test_http.py && python3 -u test_features.py && python3 -u test_update.py
       - name: IPv6 end to end (listeners, backends, PROXY protocol, UDP, per-/64 bans)
         run: cd tests/integration && sudo -E env "PATH=$PATH" python3 -u test_ipv6.py
       - name: TLS termination tests (source, system OpenSSL)
@@ -41,6 +41,12 @@ jobs:
         run: cd tests/integration && python3 -u test_acme.py
       - name: Real-kernel nftables tests
         run: sudo python3 tests/kernel/run_kernel_tests.py
+      - name: Installer with real systemd (needs a starpack built from this source tree)
+        # Turn continue-on-error off once the committed starpacks contain install.tcl/update.tcl.
+        continue-on-error: true
+        run: |
+          chmod +x releases/tclguard-linux-x86_64
+          sudo -E ./releases/tclguard-linux-x86_64 eval tests/platform/linux_install_test.tcl
       - name: Released starpack
         run: |
           chmod +x releases/tclguard-linux-x86_64
@@ -85,7 +91,7 @@ jobs:
         run: |
           $exe = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
           $failed = 0
-          foreach ($t in 'ip','config','bans','firewall','monitor','autostart','crypto','https') {
+          foreach ($t in 'ip','config','bans','firewall','monitor','autostart','crypto','https','install','update') {
             Write-Host "=== $t.test"
             $out = pwsh -NoProfile -File tools\ci-bounded.ps1 -Exe $exe -Seconds 120 eval "tests\$t.test" 2>&1 | Out-String
             $code = $LASTEXITCODE
@@ -105,6 +111,20 @@ jobs:
             Write-Host "##[endgroup]"
           }
           if ($failed) { throw "platform phases failed: $($failed -join ', ')" }
+      - name: Windows installer tests (shortcuts, Add/Remove Programs, Scheduled Task, running .exe, self-delete)
+        # Turn continue-on-error off once the committed starpacks contain install.tcl/update.tcl.
+        continue-on-error: true
+        timeout-minutes: 15
+        run: |
+          $exe = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
+          $failed = @()
+          foreach ($phase in 'user','system','defer','update') {
+            Write-Host "##[group]installer phase: $phase"
+            pwsh -NoProfile -File tools\ci-bounded.ps1 -Exe $exe -Seconds 240 eval tests\platform\windows_install_test.tcl $phase
+            if ($LASTEXITCODE -ne 0) { $failed += "$phase (exit $LASTEXITCODE)" }
+            Write-Host "##[endgroup]"
+          }
+          if ($failed) { throw "installer phases failed: $($failed -join ', ')" }
       - name: Integration tests against the starpack (real sockets)
         timeout-minutes: 12
         run: |
@@ -207,15 +227,23 @@ jobs:
           fi
           $TCLSH <<< 'puts "Thread: [package require Thread]"'
       - name: Unit tests
-        run: cd tests && for t in ip config bans firewall monitor autostart crypto https; do $TCLSH $t.test; done 2>&1 | grep -E "Total|FAILED"
+        run: cd tests && for t in ip config bans firewall monitor autostart crypto https install update; do $TCLSH $t.test; done 2>&1 | grep -E "Total|FAILED"
       - name: Self-test (source)
         run: $TCLSH tclguard.vfs/main.tcl selftest
       - name: macOS platform tests (real pfctl, LaunchAgent, netstat)
         run: sudo -E $TCLSH tests/platform/macos_test.tcl
+      - name: macOS installer tests (plist lint, launchctl, stand-in program; no starpack exists)
+        run: sudo -E $TCLSH tests/platform/macos_install_test.tcl
+      - name: Signed-update integration test (local HTTPS server)
+        run: cd tests/integration && TCLSH=$TCLSH python3 -u test_update.py
       - name: Integration tests (real sockets)
         run: |
           export TG_CMD="$TCLSH $PWD/tclguard.vfs/main.tcl"
           cd tests/integration && python3 -u test_http.py && python3 -u test_features.py
+      - name: TLS probe (where does setup stop?)
+        continue-on-error: true
+        timeout-minutes: 3
+        run: $TCLSH tests/platform/tls_probe.tcl
       - name: IPv6 end to end
         run: |
           export TG_CMD="$TCLSH $PWD/tclguard.vfs/main.tcl"

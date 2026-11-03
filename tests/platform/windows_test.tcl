@@ -57,6 +57,8 @@ if {$admin} {
     ::tg::ban::registerOnUnban ::tg::fw::onUnban
     ::tg::fw::uninstall
     ::tg::fw::init netsh
+    check "firewall backend active for the scale test" [expr {$::tg::fw::backend eq "netsh"}] $::tg::fw::lastError
+    check "initial sync succeeds" [::tg::fw::sync] $::tg::fw::lastError
     set N 2500
     set t0 [clock milliseconds]
     for {set i 0} {$i < $N} {incr i} {

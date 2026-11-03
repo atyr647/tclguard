@@ -1,0 +1,10 @@
+# TclGuard release-signing PUBLIC key (ECDSA P-256), used to verify signed updates.
+#
+# *** UNSET: this build has no signing key. While the line below says UNSET, 'tclguard update apply'
+# *** refuses to install anything and 'update check' reports results as unverified.
+#
+# The maintainer generates the key pair once with:   tclguard update keygen --out release-signing.key
+# keeps the private file OFFLINE (and in the CI secret RELEASE_SIGNING_KEY), and pastes the printed
+# "tgpub1:..." line here in place of the UNSET line, then commits and rebuilds the starpack.
+# See docs/UPDATES.md.
+tgpub1:UNSET

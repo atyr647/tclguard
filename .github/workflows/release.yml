@@ -1,0 +1,127 @@
+name: release
+
+# Publishes a signed release when a version tag is pushed:
+#
+#   git tag v1.2.3 && git push origin v1.2.3
+#
+# What it publishes: every tclguard-* file in releases/ (the starpacks you built and committed), plus
+# manifest.json and manifest.json.sig. The manifest lists each file with its SHA-256 and size and is
+# signed with the release key; installed copies of TclGuard verify that signature before they will
+# install anything (see docs/UPDATES.md).
+#
+# One-time setup (maintainer):
+#   tclguard update keygen --out release-signing.key       # prints the PUBLIC key line
+#   paste the public key line into tclguard.vfs/lib/tclguard/vendor/update-key.pub, rebuild the starpacks
+#   add the CONTENT of release-signing.key as the repository secret RELEASE_SIGNING_KEY
+#   keep release-signing.key offline; never commit it
+#
+# Without the RELEASE_SIGNING_KEY secret this workflow publishes nothing and says so.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (X.Y.Z); a manual run needs an existing tag vX.Y.Z'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', github.event.inputs.version) || github.ref }}
+
+      - name: Work out the version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="v${{ github.event.inputs.version }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          version="${tag#v}"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+(\.[0-9]+){0,3}(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::'$tag' is not a version tag (expected vX.Y.Z)"; exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Is the signing key available?
+        id: key
+        run: |
+          if [ -z "$RELEASE_SIGNING_KEY" ]; then
+            echo "present=no" >> "$GITHUB_OUTPUT"
+            echo "::warning::RELEASE_SIGNING_KEY is not set: nothing was signed or published."
+            {
+              echo "### Release skipped"
+              echo "The repository secret **RELEASE_SIGNING_KEY** is not set, so no signed release was created."
+              echo "Run \`tclguard update keygen --out release-signing.key\`, put the printed public key into"
+              echo "\`tclguard.vfs/lib/tclguard/vendor/update-key.pub\`, add the key file's content as the secret, and re-run."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "present=yes" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Tcl
+        if: steps.key.outputs.present == 'yes'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tcl8.6 tcllib python3
+
+      - name: Unit tests and lint must pass before anything is published
+        if: steps.key.outputs.present == 'yes'
+        run: |
+          python3 tools/lint_vars.py
+          ( cd tests && tclsh8.6 all.tcl )
+
+      - name: The published programs must report the tagged version
+        if: steps.key.outputs.present == 'yes'
+        run: |
+          # An update is accepted only if the new program prints the manifest's version, so a
+          # mismatch would make every update fail. Only the Linux starpack can run on this runner.
+          want="${{ steps.ver.outputs.version }}"
+          ls -l releases/
+          chmod +x releases/tclguard-linux-x86_64
+          got=$(releases/tclguard-linux-x86_64 version | awk '{print $2}')
+          echo "tag $want, linux starpack reports $got"
+          [ "$got" = "$want" ] || { echo "::error::releases/tclguard-linux-x86_64 reports $got but the tag is v$want. Rebuild the starpacks with VERSION $want (tclguard.vfs/lib/tclguard/util.tcl) and commit them first."; exit 1; }
+          ( cd releases && sha256sum -c SHA256SUMS --ignore-missing )
+
+      - name: Build and sign the manifest
+        if: steps.key.outputs.present == 'yes'
+        run: |
+          mkdir -p dist
+          cp releases/tclguard-* dist/
+          cp releases/SHA256SUMS dist/ || true
+          # the key is read from the environment (TG_RELEASE_KEY), never written to disk or the log
+          export TG_RELEASE_KEY="$RELEASE_SIGNING_KEY"
+          printf 'TclGuard %s\n' "${{ steps.ver.outputs.version }}" > notes.txt
+          tclsh8.6 tools/release-manifest.tcl --dir dist --version "${{ steps.ver.outputs.version }}" \
+            --notes-file notes.txt --require-embedded-key --urlbase "https://github.com/${{ github.repository }}/releases/download/${{ steps.ver.outputs.tag }}/"
+          ls -l dist
+          cat dist/manifest.json
+
+      - name: Create the GitHub Release
+        if: steps.key.outputs.present == 'yes'
+        run: |
+          tag="${{ steps.ver.outputs.tag }}"
+          flags=""
+          case "${{ steps.ver.outputs.version }}" in *-*) flags="--prerelease" ;; esac
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+          else
+            gh release create "$tag" dist/* --title "TclGuard ${{ steps.ver.outputs.version }}" --generate-notes $flags
+          fi
+          {
+            echo "### Released ${{ steps.ver.outputs.version }}"
+            echo "Files: $(ls dist | tr '\n' ' ')"
+          } >> "$GITHUB_STEP_SUMMARY"

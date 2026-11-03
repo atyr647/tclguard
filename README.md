@@ -43,7 +43,9 @@ tclguard ctl unban 203.0.113.5
 tclguard ctl level 2                       # force "under attack" mode
 ```
 
-A systemd unit is in [packaging/tclguard.service](packaging/tclguard.service).
+A systemd unit is in [packaging/tclguard.service](packaging/tclguard.service); `sudo tclguard install --service` sets it up for you.
+
+**Install and update without a terminal:** `tclguard install` (Start Menu / application menu entry, Apps list on Windows, optional start at boot) and `tclguard uninstall` remove exactly what they added, see [docs/INSTALL.md](docs/INSTALL.md). `tclguard update check|apply|rollback` installs only releases signed with the maintainer's key, see [docs/UPDATES.md](docs/UPDATES.md).
 
 ## What's inside
 
@@ -108,6 +110,7 @@ Prebuilt tclkits found online are old and lack Tk and `udp`, which is why `tools
 tclguard.vfs/main.tcl            entry point, CLI
 tclguard.vfs/lib/tclguard/       util  config  bans  firewall  limiter  tcpproxy  httpproxy
                                  udprelay  monitor  logwatch  control  engine  gui  selftest
+                                 install  update  (installer, signed self-update)
 build.tcl  Makefile              packaging;  tools/build-tclkit.sh builds the runtimes
 releases/                        prebuilt starpacks (+ checksums)
 experimental/xdp/                XDP/eBPF spike (see docs/XDP.md)
