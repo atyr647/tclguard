@@ -1,0 +1,35 @@
+name: winbench
+
+# Measures Tcl's own event loop on each OS (tests/load/winbench.tcl), to find where a platform's speed limit is.
+on:
+  push:
+    paths:
+      - '.github/workflows/winbench.yml'
+      - 'tests/load/winbench.tcl'
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: stable }
+      - run: cd tests/load/tgload; go build -o ../tgload-bin.exe .
+      - name: Event loop and accept rate (the shipped Windows program's own Tcl)
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
+          $env:ACCEPT_PORT = "28777"
+          $job = Start-Job { Start-Sleep -Seconds 38; & $using:PWD\tests\load\tgload-bin.exe connflood -addr 127.0.0.1:28777 -workers 40 -dur 10s }
+          & $exe eval tests\load\winbench.tcl 6
+          Receive-Job -Wait $job
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          chmod +x releases/tclguard-macos-arm64
+          releases/tclguard-macos-arm64 eval tests/load/winbench.tcl 6
