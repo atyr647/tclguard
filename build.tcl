@@ -122,3 +122,5 @@ if {$opt(check)} {
     if {$bad} { exit 1 }
     puts "payload verified"
 }
+
+exit 0
