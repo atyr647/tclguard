@@ -99,6 +99,10 @@ case $target in
       ./kitcreator 8.6.14 --host=x86_64-w64-mingw32 --enable-64bit ;;
   *) echo "usage: $0 linux|win64|macos"; exit 2 ;;
 esac
+if [ "$target" = macos ]; then
+  # fix lib/vfs/pkgIndex.tcl (see tools/repair-kit.tcl): repair a copy with the kit itself, then replace the kit
+  cp tclkit-8.6.14 tclkit-repaired && ./tclkit-8.6.14 "$ROOT/tools/repair-kit.tcl" "$PWD/tclkit-repaired" && mv tclkit-repaired tclkit-8.6.14 && chmod +x tclkit-8.6.14
+fi
 ls -la tclkit-8.6.14
 echo "Then:  <native tclkit> build.tcl --runtime <COPY of the tclkit> --format mk4 --out tclguard[.exe]"
 echo "(use a copy: a running tclkit mounts itself as a virtual directory, so 'file copy' on its own path would copy files, not the binary)"
