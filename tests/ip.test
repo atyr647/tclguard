@@ -64,4 +64,8 @@ test log-inject {newlines stripped from log text} -body {
     lindex [lindex [::tg::log::tail 1] 0] 2
 } -result {evil FAKE ALERT line}
 
+test parse-nbsp {non-ASCII whitespace never makes an address valid} -body {
+    list [::tg::ip::parse "\u00a0127.0.0.1"] [::tg::ip::parse "127.0.0.1\u0085"] [::tg::ip::parseCidr "\u00a010.0.0.0/8"] [::tg::ip::parse " 127.0.0.1 "] [::tg::ip::parse "\t::1\r\n"]
+} -result [list {} {} {} {4 2130706433} {6 1}]
+
 cleanupTests

@@ -189,14 +189,21 @@ proc ::tg::http::process {id} {
                     return
                 }
                 set line [string range $buf($id) 0 [expr {$idx - 1}]]
-                # size[;extensions]
-                if {![regexp {^([0-9a-fA-F]{1,12})(;[^\r\n]*)?$} $line -> hex]} {
+                # size[;name[=token|"quoted"]]...  The extensions are forwarded, so they must be
+                # well-formed: an unterminated quote or a control byte is parsed differently by
+                # different backends (some let a quoted string run on across the line break),
+                # which moves the chunk boundaries and hides requests ("funky chunks").
+                if {![regexp {^([0-9a-fA-F]{1,12})(.*)$} $line -> hex ext] ||
+                    ($ext ne "" && ![regexp {^(?:;[!#$%&'*+.^_`|~0-9A-Za-z-]+(?:=(?:[!#$%&'*+.^_`|~0-9A-Za-z-]+|"(?:[\t !#-\[\]-~\x80-\xff]|\\[\t -~\x80-\xff])*"))?)*$} $ext])} {
                     reject $id 400 "bad chunk size" 1
                     return
                 }
                 scan $hex %x size
-                # Floods of tiny chunks cost us a buffer copy each; real clients send big ones.
-                if {$size < 16 && [incr nsmall($id)] > 2000} { reject $id 400 "too many tiny chunks" 1; return }
+                # Floods of tiny chunks cost us a buffer copy and three writes each (~75 us, whatever the
+                # chunk size), and chunks are not counted as requests; real clients send big ones. Below
+                # 128 bytes a request gets 2000 chunks, which bounds its CPU cost to ~150 ms (with a limit
+                # of 16 bytes, 16-byte chunks cost 40x more CPU per byte than normal traffic, unmetered).
+                if {$size < 128 && [incr nsmall($id)] > 2000} { reject $id 400 "too many tiny chunks" 1; return }
                 incr bodySeen($id) $size
                 if {$bodySeen($id) > [dict get $Lc maxBodyMB] * 1048576} {
                     reject $id 413 "request body too large" 0
@@ -242,6 +249,15 @@ proc ::tg::http::process {id} {
                 if {$line ne ""} {
                     if {[regexp {[\x00-\x08\x0a-\x1f\x7f]} $line] || ![regexp {^[!#$%&'*+.^`|~0-9A-Za-z-]+:[^\x00-\x08\x0a-\x1f\x7f]*$} $line] || [incr need($id)] > 20} {
                         reject $id 400 "malformed chunk trailer" 1
+                        return
+                    }
+                    # RFC 9110 6.5.1: framing, routing and identity fields are never valid as
+                    # trailers, and a backend that merges trailers into the header set would
+                    # let a client smuggle e.g. Content-Length or X-Forwarded-For past the checks.
+                    set tn [string tolower [string range $line 0 [expr {[string first : $line] - 1}]]]
+                    if {$tn in {content-length transfer-encoding host connection upgrade expect te trailer keep-alive
+                                proxy-connection max-forwards content-encoding x-forwarded-for x-real-ip forwarded}} {
+                        reject $id 400 "forbidden chunk trailer field" 1
                         return
                     }
                 }
@@ -295,7 +311,9 @@ proc ::tg::http::parseHead {id block} {
         lappend clean $ln
     }
     set reqline [lindex $clean 0]
-    if {![regexp {^([A-Z]{3,10}) ([^ ]+) HTTP/(1\.[01])$} $reqline -> method target version]} {
+    # A TAB is not a delimiter here: some parsers split the request line on any whitespace and
+    # would see a different target or version than we do (e.g. "GET /\tHTTP/1.0 HTTP/1.1").
+    if {![regexp {^([A-Z]{3,10}) ([^ \t]+) HTTP/(1\.[01])$} $reqline -> method target version]} {
         return {err 400 "malformed request line"}
     }
     if {[string length $target] > [dict get $Lc maxUriLength]} { return {err 414 "URI too long"} }
@@ -310,10 +328,19 @@ proc ::tg::http::parseHead {id block} {
     set realName [string tolower [dict get $Lc realIpHeader]]
     foreach h $hdrs {
         if {[string index $h 0] in {" " "\t"}} { return {err 400 "obsolete header folding"} }
-        if {![regexp {^([!#$%&'*+.^_`|~0-9A-Za-z-]+):[ \t]*(.*?)[ \t]*$} $h -> hn hv]} {
-            return {err 400 "malformed header"}
-        }
+        # name ":" OWS value OWS. Deliberately not one regexp with a lazy `.*?`: Tcl's engine is
+        # quadratic in the value length there (16 KB of header value cost ~0.4 s of CPU).
+        set colon [string first : $h]
+        if {$colon < 1} { return {err 400 "malformed header"} }
+        set hn [string range $h 0 [expr {$colon - 1}]]
+        if {![regexp {^[!#$%&'*+.^_`|~0-9A-Za-z-]+$} $hn]} { return {err 400 "malformed header"} }
+        set hv [string trim [string range $h [expr {$colon + 1}] end] " \t"]
         set ln [string tolower $hn]
+        # Some servers fold "_" to "-" in header names (CGI/WSGI style), so "Content_Length" or
+        # "Transfer_Encoding" would frame the message differently there than here.
+        if {[string first _ $ln] >= 0 && [string map {_ -} $ln] in {content-length transfer-encoding host connection upgrade expect te}} {
+            return {err 400 "ambiguous header name"}
+        }
         lappend parsed [list $ln $hn $hv $h]
         switch -- $ln {
             content-length { lappend cl $hv }
@@ -328,7 +355,15 @@ proc ::tg::http::parseHead {id block} {
     if {$hosts > 1} { return {err 400 "duplicate Host header"} }
     if {$hosts == 0 && $version eq "1.1"} { return {err 400 "missing Host header"} }
     set connTokens {}
-    foreach c $conn { lappend connTokens [string trim $c] }
+    foreach c $conn { lappend connTokens [string trim $c " \t"] }
+    # "Connection: Content-Length" (or X-Real-IP ...) tells the next hop to treat that field as
+    # hop-by-hop and strip it: the body would then be parsed as new requests, or the address we
+    # add for the backend would vanish. Nothing legitimate lists these.
+    foreach c $connTokens {
+        if {[string map {_ -} $c] in {content-length transfer-encoding host x-forwarded-for x-real-ip forwarded}} {
+            return {err 400 "Connection header names a protected field"}
+        }
+    }
     # ---- message framing (the part that must agree with the backend) ----
     set framing none; set clen 0
     if {[llength $te]} {
@@ -341,7 +376,8 @@ proc ::tg::http::parseHead {id block} {
         foreach c $cl {
             if {$c ne $first} { return {err 400 "conflicting Content-Length"} }
         }
-        if {![regexp {^[0-9]{1,15}$} $first]} { return {err 400 "invalid Content-Length"} }
+        # No leading zeros: a reader using strtol(s, 0, 0) takes "010" as octal 8 (we say 10).
+        if {![regexp {^(?:0|[1-9][0-9]{0,14})$} $first]} { return {err 400 "invalid Content-Length"} }
         scan $first %ld clen
         if {$clen > [dict get $Lc maxBodyMB] * 1048576} { return {err 413 "request body too large"} }
         if {$clen > 0} { set framing length }
@@ -396,11 +432,15 @@ proc ::tg::http::handleRequest {id block} {
         }
         # per-path limits (e.g. login brute force)
         set path [lindex [split $target ?#] 0]
+        set npath $path
+        if {[llength [dict get $Lc pathLimits]]} { set npath [normPath $path] }
         set i 0
         foreach pl [dict get $Lc pathLimits] {
             lassign $pl re cnt sec
             incr i
-            if {[regexp -- $re $path]} {
+            # Match the path as sent and as a backend will resolve it, or "//login", "/%6cogin",
+            # "/./login" walk around a "^/login" limit.
+            if {[regexp -- $re $path] || ($npath ne $path && [regexp -- $re $npath])} {
                 if {[::tg::rate::hit "p:$lname:$i:$ckey" [expr {$sec * 1000}]] > $cnt} {
                     ::tg::ban::strike $cip 1 "path limit $re on $lname"
                     blockedReq $id $ckey
@@ -433,24 +473,28 @@ proc ::tg::http::handleRequest {id block} {
         }
     }
     if {[::tg::bool [dict get $Lc forwardIp]]} {
-        set chain [::tg::ip::norm $peer]
+        set prior {}
         # what the client really used to reach us; a trusted proxy may vouch for its own hop
         set proto [expr {[::tg::tls::enabled $Lc] ? "https" : "http"}]
         foreach h [dict get $d headers] {
             lassign $h ln hn hv raw
             # also catch X_Real_IP style spellings that some backends fold to X-Real-IP
-            set ln [string map {_ -} $ln]
-            if {$ln in {x-real-ip forwarded}} continue
-            if {$ln eq "x-forwarded-proto"} {
-                if {$viaProxy && [regexp {^(?i:https?)$} $hv]} { set proto [string tolower $hv] }
+            set fold [string map {_ -} $ln]
+            if {$fold in {x-real-ip forwarded}} continue
+            if {$fold eq "x-forwarded-proto"} {
+                if {$viaProxy && $ln eq "x-forwarded-proto" && [string tolower $hv] in {http https}} { set proto [string tolower $hv] }
                 continue
             }
-            if {$ln eq "x-forwarded-for"} {
-                if {$viaProxy} { set chain "$hv, $chain" }
+            if {$fold eq "x-forwarded-for"} {
+                # Behind a trusted proxy its lines are the history of the request. Keep them in the
+                # order received (RFC 9110 5.3) and only for the exact spelling the client address was
+                # taken from: "X_Forwarded_For: 1.2.3.4" is not part of that chain.
+                if {$viaProxy && $ln eq "x-forwarded-for"} { lappend prior $hv }
                 continue
             }
             append out "\r\n$raw"
         }
+        set chain [join [concat $prior [list [::tg::ip::norm $peer]]] ", "]
         append out "\r\nX-Forwarded-For: $chain\r\nX-Real-IP: [::tg::ip::norm $cip]\r\nX-Forwarded-Proto: $proto\r\n\r\n"
     } else {
         set out [string range $block 0 end]
@@ -480,6 +524,30 @@ proc ::tg::http::handleRequest {id block} {
     return ok
 }
 
+# The path the way a backend resolves it: %XX decoded, "\" read as "/", ";params" and empty or
+# "." segments dropped, ".." applied. Used only to match per-path limits.
+proc ::tg::http::normPath {path} {
+    set parts [split $path %]
+    set d [lindex $parts 0]
+    foreach p [lrange $parts 1 end] {
+        if {[regexp {^([0-9a-fA-F]{2})(.*)$} $p -> hx rest]} {
+            append d [format %c [scan $hx %x]] $rest
+        } else {
+            append d % $p
+        }
+    }
+    set out {}
+    foreach seg [split [string map {\\ /} $d] /] {
+        set seg [lindex [split $seg {;}] 0]
+        if {$seg eq "" || $seg eq "."} continue
+        if {$seg eq ".."} { set out [lrange $out 0 end-1]; continue }
+        lappend out $seg
+    }
+    set r "/[join $out /]"
+    if {[string index $d end] eq "/" && [llength $out]} { append r / }
+    return $r
+}
+
 proc ::tg::http::blockedReq {id ckey} {
     ::tg::stat::incr blocked
     ::tg::stat::incr reqBlocked
@@ -490,7 +558,7 @@ proc ::tg::http::blockedReq {id ckey} {
 proc ::tg::http::pickClientIp {headerValue setName} {
     set parts {}
     foreach p [split $headerValue ,] {
-        set p [string trim $p]
+        set p [string trim $p " \t"]
         if {$p ne "" && [::tg::ip::isValid $p]} { lappend parts $p }
     }
     if {![llength $parts]} { return "" }

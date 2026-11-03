@@ -128,7 +128,7 @@ proc ::tg::bool {v} {
 
 # Parse "host:port" / "[v6]:port" / "port" into {host port}; {} on error.
 proc ::tg::splitHostPort {s {defHost ""}} {
-    set s [string trim $s]
+    set s [string trim $s " \t\r\n"]  ;# ASCII only (see ::tg::ip::parse)
     if {[regexp {^\[([^\]]+)\]:(\d+)$} $s -> h p]} {
         # fallthrough to validation
     } elseif {[regexp {^(\d+)$} $s -> p]} {
@@ -178,7 +178,8 @@ namespace eval ::tg::ip {
 
 # Parse an address. Returns {4 int} or {6 int} (128-bit), or {} when invalid.
 proc ::tg::ip::parse {s} {
-    set s [string trim $s]
+    # ASCII whitespace only: Tcl's default also strips U+00A0 and U+0085, so "\u00a0127.0.0.1" would parse as an address
+    set s [string trim $s " \t\r\n"]
     if {[string first % $s] >= 0} { set s [lindex [split $s %] 0] }
     if {[string first : $s] < 0} { return [parse4 $s] }
     return [parse6 $s]
@@ -304,7 +305,7 @@ proc ::tg::ip::key {s} {
 
 # Parse "a.b.c.d", "a.b.c.d/n", "v6", "v6/n" -> {fam prefixLen netInt} or {}
 proc ::tg::ip::parseCidr {s} {
-    set s [string trim $s]
+    set s [string trim $s " \t\r\n"]
     if {$s eq ""} { return {} }
     set bits -1
     if {[regexp {^([^/]+)/(\d{1,3})$} $s -> a bits]} { set s $a }

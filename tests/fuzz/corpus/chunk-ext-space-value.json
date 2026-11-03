@@ -1,0 +1,1 @@
+{"ops": [["s", "504f5354202f6320485454502f312e310d0a486f73743a20780d0a5472616e736665722d456e636f64696e673a206368756e6b65640d0a0d0a353b613d6220630d0a68656c6c6f0d0a300d0a0d0a"]], "end": "half", "kind": "hand", "sig": "chunk-ext-space-value", "detail": "unquoted space in a chunk extension value", "variant": "default", "config": "default", "upg": 0, "note": "hand-written"}

@@ -25,6 +25,8 @@ jobs:
         run: cd tests/gui && xvfb-run -a -s "-screen 0 1300x900x24" wish8.6 smoke.tcl
       - name: Integration tests (real sockets)
         run: cd tests/integration && python3 -u test_http.py && python3 -u test_features.py && python3 -u test_update.py
+      - name: HTTP parser fuzzer (deterministic smoke run with smuggling, liveness and CPU oracles)
+        run: python3 -u tests/fuzz/fuzz.py ci
       - name: IPv6 end to end (listeners, backends, PROXY protocol, UDP, per-/64 bans)
         run: cd tests/integration && sudo -E env "PATH=$PATH" python3 -u test_ipv6.py
       - name: TLS termination tests (source, system OpenSSL)

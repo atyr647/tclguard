@@ -285,4 +285,21 @@ if OPENSSL and os.name != "nt":
     finally:
         g.cleanup(); be.stop()
 
+# ============================================================ X-Forwarded-Proto: trusted proxy vs everyone else
+be = HttpBackend(); port = free_port()
+g = Guard({"web": {"type": "http", "port": port, "backendPort": be.port, "connRate": 1000, "maxConnsPerIP": 400, "reqRate": 5000,
+                   "trustedProxies": "127.0.0.1"}}, {"strikeThreshold": 100})
+try:
+    g.start(); assert wait_port(port)
+    get("/a", port=port, extra="X-Forwarded-For: 203.0.113.7\r\nX-Forwarded-Proto: https\r\n")
+    check("a trusted proxy may vouch for the scheme it saw (https)", be.requests[-1][1].get("x-forwarded-proto") == "https", be.requests[-1][1])
+    get("/b", port=port, extra="X-Forwarded-For: 203.0.113.7\r\nX-Forwarded-Proto: javascript:alert(1)\r\n")
+    check("...but nothing other than http/https is passed on", be.requests[-1][1].get("x-forwarded-proto") == "http", be.requests[-1][1])
+    get("/c", port=port, extra="X-Forwarded-Proto: https\r\n")
+    check("without a trusted-proxy hop (no client address header) the guard's own value is used", be.requests[-1][1].get("x-forwarded-proto") == "http", be.requests[-1][1])
+    bad = [l for l in g.stderr().splitlines() if "background error" in l or "invalid command" in l or "can't read" in l or "couldn't compile" in l]
+    check("no Tcl errors in the guard log (X-Forwarded-Proto handling)", not bad, bad[:3])
+finally:
+    g.cleanup(); be.stop()
+
 sys.exit(summary())
