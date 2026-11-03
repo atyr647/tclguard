@@ -597,7 +597,7 @@ proc ::tg::update::targetFor {opts} {
         # Only a real single-file program may replace itself. tclsh/wish running main.tcl from a
         # folder must NEVER be mistaken for it (that would overwrite the Tcl interpreter).
         set exe [info nameofexecutable]
-        if {![info exists ::starkit::topdir] || [file isdirectory $::starkit::topdir] \
+        if {![info exists ::starkit::topdir] \
             || [string tolower [file normalize $::starkit::topdir]] ne [string tolower [file normalize $exe]]} {
             error "TclGuard is running from source files or through another Tcl runtime, so there is no single-file program to replace. Download the new release instead."
         }
@@ -606,7 +606,7 @@ proc ::tg::update::targetFor {opts} {
     set t [file normalize $t]
     # follow symbolic links so the real file is replaced, not the link
     for {set i 0} {$i < 10 && ![catch {file readlink $t} l]} {incr i} { set t [file normalize [file join [file dirname $t] $l]] }
-    if {![file isfile $t]} { error "$t is not a file" }
+    if {![::tg::nfs::isFile $t]} { error "$t is not a file" }
     return $t
 }
 
@@ -660,7 +660,7 @@ proc ::tg::update::swapIn {newFile target} {
     set prev $target.previous
     set tmpPrev $target.prev[pid]
     try {
-        file copy -force -- $target $tmpPrev
+        ::tg::nfs::copy $target $tmpPrev
         file rename -force -- $tmpPrev $prev
     } on error {e} {
         catch { file delete -force -- $tmpPrev }
@@ -670,13 +670,13 @@ proc ::tg::update::swapIn {newFile target} {
         # a running .exe cannot be overwritten or deleted, but it can be renamed
         set old $target.old
         if {[file exists $old] && [catch {file delete -force -- $old}]} { set old $target.old[pid] }
-        if {[catch {file rename -force -- $target $old} e]} { error "could not move the running program aside: $e" }
-        if {[catch {file rename -force -- $newFile $target} e]} {
-            catch { file rename -force -- $old $target }
+        if {[catch {::tg::nfs::move $target $old} e]} { error "could not move the running program aside: $e" }
+        if {[catch {::tg::nfs::move $newFile $target} e]} {
+            catch { ::tg::nfs::move $old $target }
             error "could not put the new program in place: $e"
         }
     } else {
-        if {[catch {file rename -force -- $newFile $target} e]} { error "could not put the new program in place: $e" }
+        if {[catch {::tg::nfs::move $newFile $target} e]} { error "could not put the new program in place: $e" }
     }
 }
 

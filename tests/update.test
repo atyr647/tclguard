@@ -1,7 +1,7 @@
 source [file join [file dirname [info script]] helpers.tcl]
 loadmods util config crypto json
 # update.tcl uses ::http only inside fetch, which these tests replace with an in-memory server.
-loadmods update
+loadmods install nativefs update
 set ::tg::log::stderr 0
 freezeClock
 
@@ -665,18 +665,18 @@ test upd-windows-swap {the Windows path renames the running program to .old, kee
     lappend out [expr {[readBytes $d/app.old] eq $new}] [expr {[readBytes $d/app] eq [fakeProgram 1.2.0]}]
     # failure while moving the new file in: the running program is put back
     writeBytes $d/app.newtest "x"
-    rename ::file ::file_orig
-    proc ::file {args} {
-        if {[lindex $args 0] eq "rename" && [lindex $args end-1] eq "$::d/app.newtest"} { error "access denied" }
-        tailcall ::file_orig {*}$args
+    rename ::tg::nfs::move ::tg::nfs::move_orig
+    proc ::tg::nfs::move {src dst} {
+        if {$src eq "$::d/app.newtest"} { error "access denied" }
+        tailcall ::tg::nfs::move_orig $src $dst
     }
     set e [catch {::tg::update::swapIn $d/app.newtest $d/app} msg]
-    rename ::file {}
-    rename ::file_orig ::file
+    rename ::tg::nfs::move {}
+    rename ::tg::nfs::move_orig ::tg::nfs::move
     lappend out $e [string match "*could not put the new program in place*" $msg] [expr {[readBytes $d/app] eq [fakeProgram 1.2.0]}]
 } -cleanup {
     set ::tcl_platform(platform) $savedPlat
-    if {[llength [info commands ::file_orig]]} { rename ::file {}; rename ::file_orig ::file }
+    if {[llength [info commands ::tg::nfs::move_orig]]} { rename ::tg::nfs::move {}; rename ::tg::nfs::move_orig ::tg::nfs::move }
 } -result [list {app app.old app.previous} 1 1 1 1 1 1 1 1]
 
 test upd-apply-new-over-previous {a second update replaces .previous with the version it replaced} -setup {resetEnv; set d [target]} -body {

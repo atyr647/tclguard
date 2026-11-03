@@ -1,5 +1,5 @@
 source [file join [file dirname [info script]] helpers.tcl]
-loadmods util config crypto json bans firewall autostart install
+loadmods util config crypto json bans firewall autostart nativefs install
 set ::tg::log::stderr 0
 
 # ---- sandbox: nothing here may touch the real system -------------------------------------------

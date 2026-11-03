@@ -28,7 +28,7 @@ if {[want user]} { rawCall user {
     check "plan lists the program and the autostart entry" [expr {[string match "*$bin*" [join $steps]] && [string match "*sign in*" [join $steps]]}] $steps
     set err [::tg::install::run {scope user service yes}]
     check "install succeeds" [expr {$err eq ""}] $err
-    check "program installed, executable, same size" [expr {[file executable $bin] && [file size $bin] == [file size [info nameofexecutable]]}]
+    check "program installed, executable, byte-for-byte identical" [expr {[file executable $bin] && [::tg::nfs::same $bin [info nameofexecutable]]}]
     set rc [catch {exec $bin version 2>@1} v]
     check "the installed copy runs" [expr {!$rc && [string match "TclGuard *" $v]}] $v
     set desk [file join $home .local share applications tclguard.desktop]

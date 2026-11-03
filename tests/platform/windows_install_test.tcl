@@ -78,7 +78,7 @@ proc anExecutableCopy {name {extra ""}} {
     # a byte-different copy of the running program (the starpack is a plain file, so appending changes it)
     global exe tmp
     set dst [file join $tmp $name]
-    file copy -force $exe $dst
+    ::tg::nfs::copy $exe $dst        ;# the running starpack is mounted over its own path: copy the real file
     if {$extra ne ""} { set fh [open $dst ab]; puts -nonewline $fh $extra; close $fh }
     return $dst
 }
@@ -106,7 +106,7 @@ proc scenario {scope} {
     set err [::tg::install::run $opts]
     check "install succeeds" [expr {$err eq ""}] $err
     check "the program is in [file nativename $dir]" [file exists $inst]
-    check "the installed copy is byte-identical" [expr {[file size $inst] == [file size $exe]}]
+    check "the installed copy is byte-identical" [::tg::nfs::same $inst $exe]
     set rc [catch {exec $inst version 2>@1} v]
     check "the installed copy runs and reports its version" [expr {!$rc && [string match "TclGuard *" $v]}] $v
     check "Start Menu shortcut exists" [file exists $menu] $menu
@@ -220,18 +220,18 @@ if {[want update]} { rawCall "update mechanics" {
     check "the console program prints its version into a pipe" [expr {$ok && [string match "TclGuard *" $text]}] $text
     set target [file join $tmp tg-upd-target.exe]
     catch {file delete -force $target $target.previous $target.old}
-    file copy -force $exe $target
+    ::tg::nfs::copy $exe $target
     set sleeper [file join $tmp tg-sleeper2.tcl]
     set fh [open $sleeper w]; puts $fh {after 60000 {set ::done 1}; vwait ::done}; close $fh
     set pidRun [exec $target eval $sleeper &]
     after 3000
     set newer [file join $tmp tg-upd-new.exe]
-    file copy -force $exe $newer
+    ::tg::nfs::copy $exe $newer
     set fh [open $newer ab]; puts -nonewline $fh "\0update"; close $fh
     set orig [file size $target]
     set e [catch {::tg::update::swapIn $newer $target} msg]
     check "swapIn replaces a RUNNING exe (rename to .old)" [expr {!$e}] $msg
-    check "the new file is in place" [expr {[file size $target] == [file size $exe] + 7}]
+    check "the new file is in place" [expr {[file size $target] == $orig + 7}]
     check ".old (the running one) and .previous both exist" [expr {[file exists $target.old] && [file exists $target.previous] && [file size $target.previous] == $orig}]
     catch {exec taskkill /F /PID $pidRun}
     check "the old running copy ended" [waitProcessGone $pidRun 30]

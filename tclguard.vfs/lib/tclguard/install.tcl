@@ -135,8 +135,9 @@ proc ::tg::install::selfExe {} {
     variable exeOverride
     if {$exeOverride ne ""} { return $exeOverride }
     set exe [info nameofexecutable]
-    # (tclsh with the starkit package also defines topdir when it runs main.tcl from a folder)
-    if {![info exists ::starkit::topdir] || [file isdirectory $::starkit::topdir]} {
+    # NB a mounted starpack looks like a directory to Tcl, so "isdirectory" says nothing here; what matters is that
+    # topdir is the program file itself (an unwrapped folder or another runtime fails the comparison below).
+    if {![info exists ::starkit::topdir]} {
         error "TclGuard is running from source files, not from the single-file program, so there is nothing to install. Download the single file for your system from $::tg::install::projectUrl/releases"
     }
     if {[canon $::starkit::topdir] ne [canon $exe]} {
@@ -634,7 +635,7 @@ proc ::tg::install::describeInstall {o L} {
     set same [sameFile [dict get $L exe] $bin]
     if {$same} {
         lappend steps "TclGuard is already running from [nat $bin]; nothing to copy"
-    } elseif {[file isfile $bin] && ![catch {sameBytes [dict get $L exe] $bin} same] && $same} {
+    } elseif {[file isfile $bin] && ![catch {rawSame [dict get $L exe] $bin} same] && $same} {
         lappend steps "[nat $bin] is already this exact program; nothing to copy"
     } elseif {[file exists $bin]} {
         lappend steps "Replace the installed program [nat $bin] with this one (the old copy is kept until it is no longer running[expr {$plat eq {windows} ? {: it is renamed to tclguard.exe.old} : {}}])"
@@ -725,6 +726,15 @@ proc ::tg::install::newManifest {L} {
         exe [dict get $L binPath] dataDirs [dict get $L dataDirs] items {}
 }
 
+# The program file itself is only ever touched through ::tg::nfs (see nativefs.tcl): a running starpack is
+# mounted over its own path, so Tcl's file commands would act on the files inside it.
+# 'quoted' PowerShell string. PowerShell also treats the typographic single quotes as quotes.
+proc ::tg::install::psq {s} {
+    string cat ' [string map [list ' '' \u2018 \u2018\u2018 \u2019 \u2019\u2019 \u201a \u201a\u201a \u201b \u201b\u201b] $s] '
+}
+proc ::tg::install::rawCopy {src dst} { if {[catch {::tg::nfs::copy $src $dst} e]} { error "could not copy the program: $e" } }
+proc ::tg::install::rawSame {a b} { ::tg::nfs::same $a $b }
+
 proc ::tg::install::copyProgram {o L mVar} {
     upvar 1 $mVar m
     set src [dict get $L exe]
@@ -736,21 +746,21 @@ proc ::tg::install::copyProgram {o L mVar} {
         addItem m [dict create type binary path $dst]
         return
     }
-    if {[file exists $dst] && ![sameBytes $src $dst] && ![hasItem $m binary path $dst] && ![dict get $o force]} {
+    if {[file exists $dst] && ![rawSame $src $dst] && ![hasItem $m binary path $dst] && ![dict get $o force]} {
         error "$dst already exists and was not installed by TclGuard. Move it away, or use --force to replace it."
     }
     file mkdir $dir
     if {[info exists made]} { foreach d $made { addItem m [dict create type dir path $d] } }
-    if {[file exists $dst] && [sameBytes $src $dst]} {
+    if {[file exists $dst] && [rawSame $src $dst]} {
         addItem m [dict create type binary path $dst]
         return
     }
     if {[file exists $dst]} { note "A TclGuard that is already running keeps using the old version until it is restarted." }
     set tmp "$dst.new[pid]"
     try {
-        file copy -force -- $src $tmp
+        rawCopy $src $tmp
         catch { file attributes $tmp -permissions 0755 }
-        if {![sameBytes $src $tmp]} { error "the copy to $tmp does not match the original (disk full?)" }
+        if {![rawSame $src $tmp]} { error "the copy to $tmp does not match the original (disk full?)" }
         if {[isWin] && [file exists $dst]} {
             # a running .exe cannot be overwritten or deleted, but it can be renamed
             set old "$dst.old"
