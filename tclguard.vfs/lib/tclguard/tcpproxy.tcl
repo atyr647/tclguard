@@ -90,6 +90,14 @@ proc ::tg::tcp::start {name L} {
     if {[info exists srv($name)]} { stop $name }
     set cfg($name) $L
     set nconn($name) 0
+    if {[::tg::tls::enabled $L]} {
+        set terr [::tg::tls::prepare $name $L]
+        if {$terr ne ""} {
+            ::tg::log::alert "listener '$name' not started: $terr"
+            unset cfg($name)
+            return 0
+        }
+    }
     set bind [dict get $L bind]
     set port [dict get $L port]
     set args [list -server [list ::tg::tcp::accept $name]]
@@ -102,6 +110,7 @@ proc ::tg::tcp::start {name L} {
     set srv($name) $s
     set mode [dict get $L type]
     if {$mode eq "http"} { ::tg::http::prepare $name $L }
+    if {[::tg::tls::enabled $L]} { append mode "+tls" }
     ::tg::log::info "listening on [::tg::joinHostPort $bind $port] ($mode) -> [::tg::joinHostPort [dict get $L backendHost] [dict get $L backendPort]]  \[$name\]"
     return 1
 }
@@ -119,6 +128,7 @@ proc ::tg::tcp::stop {name} {
         if {$cl($id) eq $name} { close_ $id "listener stopped" }
     }
     unset -nocomplain cfg($name)
+    ::tg::tls::stop $name
 }
 
 proc ::tg::tcp::stopAll {} {
@@ -207,6 +217,20 @@ proc ::tg::tcp::newConn {name L chan ip port key} {
         return
     }
     ::tg::stat::incr conn
+    if {[::tg::tls::enabled $L]} {
+        ::tg::tls::start $id $chan $name $L      ;# continues in ready{} once the handshake is done
+        return
+    }
+    ready $id
+}
+
+# The client connection is usable (immediately for plaintext, after the handshake for TLS):
+# start the HTTP inspector or the raw relay.
+proc ::tg::tcp::ready {id} {
+    variable cc; variable cl; variable cfg; variable ckey; variable cip; variable dl; variable mode
+    if {![info exists cc($id)]} return
+    set name $cl($id); set L $cfg($name); set chan $cc($id); set key $ckey($id); set ip $cip($id)
+    set now [::tg::now]
     if {$mode($id) eq "http"} {
         ::tg::http::begin $id $name $L $ip $key
         fileevent $chan readable [list ::tg::http::clientReadable $id]
@@ -465,6 +489,7 @@ proc ::tg::tcp::close_ {id {why ""}} {
             catch {close $ch}
         }
     }
+    if {$st($id) eq "hs"} { ::tg::tls::forget $id }
     if {$mode($id) eq "http"} { catch {::tg::http::end $id} }
     if {!$noted($id) && [expr {[::tg::now] - $t0($id)}] > 20000 && $bin($id) > 0 && $bout($id) > 0 && $mode($id) ne "http"} {
         ::tg::trust::note $cip($id)
@@ -501,6 +526,10 @@ proc ::tg::tcp::sweep {t} {
         set L $cfg($cl($id))
         if {$st($id) eq "connecting" && $t > $cdl($id)} {
             backendFailed $id "connect timeout"
+            continue
+        }
+        if {$st($id) eq "hs"} {
+            if {$dl($id) > 0 && $t > $dl($id)} { ::tg::tls::timeout $id }
             continue
         }
         if {$dl($id) > 0 && $t > $dl($id)} {

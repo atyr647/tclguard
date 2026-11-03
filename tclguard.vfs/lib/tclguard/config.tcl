@@ -74,6 +74,14 @@ namespace eval ::tg::cfg {
         maxLifetime 0
         lazyConnect 1
         proxyProtocol none
+        tls 0
+        tlsCert ""
+        tlsKey ""
+        tlsNames {}
+        tlsMinVersion 1.2
+        tlsCiphers ""
+        tlsHandshakeTimeout 10
+        tlsMaxHandshaking 256
     }
     variable httpDefaults {
         maxConns 2000
@@ -100,6 +108,14 @@ namespace eval ::tg::cfg {
         pathLimits {}
         lazyConnect 1
         proxyProtocol none
+        tls 0
+        tlsCert ""
+        tlsKey ""
+        tlsNames {}
+        tlsMinVersion 1.2
+        tlsCiphers ""
+        tlsHandshakeTimeout 10
+        tlsMaxHandshaking 256
     }
     variable udpDefaults {
         maxSessions 4000
@@ -465,6 +481,21 @@ proc ::tg::cfg::validate {cfg} {
         }
         foreach k {lazyConnect forwardIp banOffenders learnTrust} {
             if {[dict exists $L $k] && ![string is boolean -strict [dict get $L $k]]} { lappend errs "$p: $k must be yes/no" }
+        }
+        if {[dict exists $L tls] && [::tg::bool [dict get $L tls]]} {
+            if {$type eq "udp"} { lappend errs "$p: tls is not available for UDP listeners" }
+            if {![llength [info commands ::tg::tls::available]] || ![::tg::tls::available]} {
+                lappend warns "$p: this build has no TLS support (tcltls missing); the listener will not start"
+            }
+            if {[dict get $L tlsMinVersion] ni {1.2 1.3}} { lappend errs "$p: tlsMinVersion must be 1.2 or 1.3" }
+            if {[dict get $L tlsCert] ne "" && [dict get $L tlsKey] eq ""} { lappend errs "$p: tlsCert needs tlsKey too" }
+            if {[dict get $L tlsCert] eq "" && [dict get $L tlsKey] ne ""} { lappend errs "$p: tlsKey needs tlsCert too" }
+            foreach k {tlsHandshakeTimeout tlsMaxHandshaking} {
+                if {![::tg::isInt [dict get $L $k] 1 1000000]} { lappend errs "$p: $k must be a positive whole number" }
+            }
+            foreach nm [dict get $L tlsNames] {
+                if {![regexp {^[A-Za-z0-9._*:-]+$} $nm]} { lappend errs "$p: tlsNames: '$nm' is not a valid host name or address" }
+            }
         }
         if {[dict exists $L proxyProtocol] && [dict get $L proxyProtocol] ni {none v1 v2}} {
             lappend errs "$p: proxyProtocol must be none, v1 or v2"

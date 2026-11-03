@@ -6,6 +6,7 @@
 namespace eval ::tg::engine {
     variable running 0
     variable startedAt 0
+    variable lastHouse 0
     variable runningCfg {}      ;# listener name -> config currently running
     variable lastGeneral {}
     variable hooked 0
@@ -154,6 +155,10 @@ proc ::tg::engine::tick {t} {
     ::tg::udp::sweep $t
     ::tg::logw::poll $t
     ::tg::fw::tick $t
+    if {$t - $::tg::engine::lastHouse > 3600000} {
+        set ::tg::engine::lastHouse $t
+        catch {::tg::tls::housekeeping}
+    }
 }
 
 # ------------------------------------------------------------- snapshot ----

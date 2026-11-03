@@ -430,18 +430,24 @@ proc ::tg::http::handleRequest {id block} {
     }
     if {[::tg::bool [dict get $Lc forwardIp]]} {
         set chain [::tg::ip::norm $peer]
+        # what the client really used to reach us; a trusted proxy may vouch for its own hop
+        set proto [expr {[::tg::tls::enabled $Lc] ? "https" : "http"}]
         foreach h [dict get $d headers] {
             lassign $h ln hn hv raw
             # also catch X_Real_IP style spellings that some backends fold to X-Real-IP
             set ln [string map {_ -} $ln]
             if {$ln in {x-real-ip forwarded}} continue
+            if {$ln eq "x-forwarded-proto"} {
+                if {$viaProxy && [regexp {^(?i:https?)$} $hv]} { set proto [string tolower $hv] }
+                continue
+            }
             if {$ln eq "x-forwarded-for"} {
                 if {$viaProxy} { set chain "$hv, $chain" }
                 continue
             }
             append out "\r\n$raw"
         }
-        append out "\r\nX-Forwarded-For: $chain\r\nX-Real-IP: [::tg::ip::norm $cip]\r\n\r\n"
+        append out "\r\nX-Forwarded-For: $chain\r\nX-Real-IP: [::tg::ip::norm $cip]\r\nX-Forwarded-Proto: $proto\r\n\r\n"
     } else {
         set out [string range $block 0 end]
     }
