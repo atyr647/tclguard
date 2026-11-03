@@ -262,7 +262,8 @@ proc cmdEval {argv} {
     set ::argv [lrange $argv 1 end]
     set ::argv0 $script
     set ::argc [llength $::argv]
-    source $script
+    # global scope, so the script behaves exactly as under tclsh
+    uplevel #0 [list source $script]
 }
 
 proc haveDisplay {} {
@@ -312,6 +313,9 @@ proc cmdRun {argv} {
 # ---- dispatch -------------------------------------------------------------------
 
 set cmd [lindex $argv 0]
+# An uncaught error must reach stderr and end the process: in a Tk build on Windows it would
+# otherwise become a modal dialog nobody can dismiss.
+if {[catch {
 switch -glob -- $cmd {
     help - -h - --help { usage }
     version - --version { puts "TclGuard $::tg::VERSION (Tcl [info patchlevel])" }
@@ -324,6 +328,12 @@ switch -glob -- $cmd {
     autostart { cmdAutostart [lrange $argv 1 end] }
     eval     { cmdEval [lrange $argv 1 end] }
     default  { cmdRun $argv }
+}
+
+} err opts]} {
+    puts stderr "tclguard: $err"
+    puts stderr [dict get $opts -errorinfo]
+    exit 1
 }
 
 # Tk kits stay in the event loop when the script ends, so always leave explicitly.
