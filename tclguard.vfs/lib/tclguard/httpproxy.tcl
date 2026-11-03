@@ -355,7 +355,7 @@ proc ::tg::http::parseHead {id block} {
     if {$hosts > 1} { return {err 400 "duplicate Host header"} }
     if {$hosts == 0 && $version eq "1.1"} { return {err 400 "missing Host header"} }
     set connTokens {}
-    foreach c $conn { lappend connTokens [string trim $c] }
+    foreach c $conn { lappend connTokens [string trim $c " \t"] }
     # "Connection: Content-Length" (or X-Real-IP ...) tells the next hop to treat that field as
     # hop-by-hop and strip it: the body would then be parsed as new requests, or the address we
     # add for the backend would vanish. Nothing legitimate lists these.
@@ -548,7 +548,7 @@ proc ::tg::http::blockedReq {id ckey} {
 proc ::tg::http::pickClientIp {headerValue setName} {
     set parts {}
     foreach p [split $headerValue ,] {
-        set p [string trim $p]
+        set p [string trim $p " \t"]
         if {$p ne "" && [::tg::ip::isValid $p]} { lappend parts $p }
     }
     if {![llength $parts]} { return "" }
