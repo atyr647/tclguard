@@ -157,6 +157,6 @@ foreach e [::tg::log::tail 5000 debug] { if {[string match "*background error*" 
 check "no background errors logged" [expr {![llength $errs]}] [lrange $errs 0 2]
 
 ::tg::engine::stop
-file delete -force $tmp
+catch {file delete -force $tmp}   ;# Windows refuses while the log file is still open
 puts "\n$pass passed, $fail failed"
 exit [expr {$fail ? 1 : 0}]
