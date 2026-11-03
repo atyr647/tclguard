@@ -287,7 +287,7 @@ if OPENSSL and os.name != "nt":
         os.write(fd, b"GET /after-keyupdate HTTP/1.1\nHost: x\nConnection: close\n\n"); pump_until(b"ok:GET /after-keyupdate", 15)
         try: os.kill(pid, 9); os.waitpid(pid, 0)
         except Exception: pass
-        check("TLS 1.3 key updates do not trip the renegotiation guard", b"ok:GET /after-keyupdate" in buf, buf[-200:])
+        check("TLS 1.3 key updates do not trip the renegotiation guard", b"ok:GET /after-keyupdate" in buf, (buf[-300:], g.stderr()[-400:]))
     finally:
         g.cleanup(); be.stop()
 
