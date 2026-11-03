@@ -79,7 +79,8 @@ listeners = {
 }
 general = {"allowlist": "{}", "logLevel": "warn"}
 if args.fw != "none":
-    general["firewall"] = "nft"; general["harden"] = 1 if args.fw == "harden" else 0
+    general["firewall"] = {"Linux": "nft", "Windows": "netsh", "Darwin": "pf"}[platform.system()]
+    general["harden"] = 1 if args.fw == "harden" else 0
     os.environ["TG_FIREWALL"] = "1"            # the integration harness otherwise starts every guard with --no-firewall
 if args.workers: general["workers"] = args.workers
 g = Guard(listeners, general)

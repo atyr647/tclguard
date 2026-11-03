@@ -25,7 +25,9 @@ jobs:
         run: |
           pip install psutil
           $env:TG_CMD = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
-          python -u tests/load/run_flood.py --tgload tests/load/tgload-bin.exe --soak 90 --label windows
+          foreach ($fw in 'none','bans') {
+            python -u tests/load/run_flood.py --tgload tests/load/tgload-bin.exe --soak 90 --fw $fw --label "windows-$fw"
+          }
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with: { name: flood-windows, path: tests/load/results/*.json }
@@ -46,7 +48,8 @@ jobs:
           ulimit -n 10240 || true
           chmod +x releases/tclguard-macos-arm64; xattr -cr releases/tclguard-macos-arm64 || true
           export TG_CMD="$PWD/releases/tclguard-macos-arm64"
-          python3 -u tests/load/run_flood.py --soak 90 --label macos
+          python3 -u tests/load/run_flood.py --soak 90 --label macos-none
+          sudo -E env "PATH=$PATH" python3 -u tests/load/run_flood.py --soak 90 --fw bans --label macos-bans
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with: { name: flood-macos, path: tests/load/results/*.json }

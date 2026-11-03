@@ -77,6 +77,26 @@ func emit(cmd string, dur time.Duration, c *counters, extra map[string]any) {
 	fmt.Println(string(b))
 }
 
+// errKind sorts a network error into the few causes that matter when reading a flood report.
+func errKind(err error) string {
+	m := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(m, "refused") || strings.Contains(m, "actively refused"):
+		return "refused"
+	case strings.Contains(m, "timeout") || strings.Contains(m, "deadline"):
+		return "timeout"
+	case strings.Contains(m, "reset") || strings.Contains(m, "forcibly closed") || strings.Contains(m, "broken pipe") || strings.Contains(m, "aborted"):
+		return "reset"
+	case strings.Contains(m, "eof"):
+		return "eof"
+	case strings.Contains(m, "address already in use") || strings.Contains(m, "only one usage") || strings.Contains(m, "cannot assign") || strings.Contains(m, "no buffer space") || strings.Contains(m, "bind"):
+		return "local_ports"
+	case strings.Contains(m, "too many open files") || strings.Contains(m, "emfile"):
+		return "local_fds"
+	}
+	return "other"
+}
+
 func pct(l []float64, p float64) float64 {
 	if len(l) == 0 {
 		return 0
@@ -176,6 +196,7 @@ func runHTTP(cmd, url string, conns int, dur time.Duration, srcbase string, srcn
 					resp, err := cl.Get(url)
 					if err != nil {
 						c.add("error", 1)
+						c.add("error_"+errKind(err), 1)
 						break // new transport (new connection) after a failure
 					}
 					io.Copy(io.Discard, resp.Body)
@@ -226,6 +247,7 @@ func runConnFlood(addr string, workers int, dur time.Duration, srcbase string, s
 				conn, err := dialer(srcbase, srcn, i, 3*time.Second).Dial("tcp", addr)
 				if err != nil {
 					c.add("dial_error", 1)
+					c.add("dial_error_"+errKind(err), 1)
 					continue
 				}
 				c.add("connected", 1)
@@ -265,6 +287,7 @@ func runSlowloris(addr string, conns int, dur time.Duration, srcbase string, src
 				conn, err := dialer(srcbase, srcn, i, 3*time.Second).Dial("tcp", addr)
 				if err != nil {
 					c.add("dial_error", 1)
+					c.add("dial_error_"+errKind(err), 1)
 					time.Sleep(200 * time.Millisecond)
 					continue
 				}
@@ -320,6 +343,7 @@ func runGarbage(addr string, workers int, dur time.Duration, srcbase string, src
 				conn, err := dialer(srcbase, srcn, i, 3*time.Second).Dial("tcp", addr)
 				if err != nil {
 					c.add("dial_error", 1)
+					c.add("dial_error_"+errKind(err), 1)
 					continue
 				}
 				c.add("connected", 1)
@@ -360,6 +384,7 @@ func runTLSFlood(addr string, workers int, dur time.Duration, srcbase string, sr
 				raw, err := dialer(srcbase, srcn, i, 3*time.Second).Dial("tcp", addr)
 				if err != nil {
 					c.add("dial_error", 1)
+					c.add("dial_error_"+errKind(err), 1)
 					continue
 				}
 				if halfopen {

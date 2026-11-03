@@ -64,6 +64,9 @@ proc ::tg::tcp::computeMaxTotal {} {
         }
     } elseif {$::tcl_platform(platform) eq "windows"} {
         set fdSoft 2048   ;# Windows has no small fd cap in the C runtime used by Tcl
+    } elseif {$::tcl_platform(os) eq "Darwin"} {
+        # macOS: no /proc; a shell asks for the real soft limit (the default there is only 256)
+        if {![catch {exec /bin/sh -c {ulimit -n}} n] && [string is integer -strict [string trim $n]]} { set fdSoft [string trim $n] }
     }
     # Tcl 8.6 waits for events with select(), which cannot handle a descriptor numbered FD_SETSIZE (1024) or
     # more: the whole process aborts ("bit out of range 0 - FD_SETSIZE on fd_set"). Raising the open-files limit
