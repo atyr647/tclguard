@@ -13,6 +13,7 @@ proc setup {harden} {
     dict set c general hardenSynBurst 80
     dict set c general hardenUdpRate 200
     dict set c general hardenUdpBurst 400
+    dict set c general hardenConnLimit 40
     dict set c listeners t {type tcp port 8080 backendPort 8081}
     dict set c listeners u {type udp port 19132 backendPort 19133}
     ::tg::cfg::set_ $c

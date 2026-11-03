@@ -72,8 +72,8 @@ Everything below was run against this code:
 
 | Suite | What it proves | Result |
 |---|---|---|
-| `make unit` | IP/CIDR math, config validation, ban/strike/escalation logic (incl. CIDR range bans), threat-level state machine, firewall command generation (incl. injection attempts), log watchers, packaging | 172 checks pass |
-| `make kernel` (root) | Real nftables in network namespaces: bans drop traffic and expire in-kernel; SYN flood 600→~120 connects; UDP flood 6000→~400 packets; counters; clean uninstall | 19 checks pass |
+| `make unit` | IP/CIDR math, config validation, ban/strike/escalation logic (incl. CIDR range bans), threat-level state machine, firewall command generation (incl. injection attempts), log watchers, packaging | 173 checks pass |
+| `make kernel` (root) | Real nftables in network namespaces: bans drop traffic and expire in-kernel; SYN flood 600→~40 connects; 70 simultaneous connections capped at the 40-per-source limit; UDP flood 6000→~400 packets; counters; clean uninstall | 22 checks pass |
 | `make integration` | Real sockets against real backends: 20 malformed/smuggling requests refused, byte-exact bodies (5 KB, 1.5 MB, chunked), pipelining, half-close, keep-alive, slowloris/slow-POST, rate limits and bans, challenge cookie, trusted proxy, WebSocket, PROXY protocol v1/v2, UDP relay, lockdown, CLI, persistence, plus regression tests for every issue an independent code review found | 105 checks pass |
 | `python3 tests/integration/test_leaks.py` | 14,400 abusive connections (RST, half-close, stalls, garbage, oversize) in three rounds: every table drains to zero, descriptors return to baseline, memory flat after the first round | pass |
 | `make gui-test` | Drives every GUI flow through the real widgets under a virtual display (wizard, edit dialog, toggles, bans, allow/block lists, level selector, settings, theme switch) and fails on any background error | 21 checks pass |

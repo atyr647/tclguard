@@ -145,6 +145,25 @@ try:
     time.sleep(3)
     check("legit connection works again after the flood stops", client(tcp_once) == "OK")
 
+    # 4b. per-source concurrent connection limit (kernel connlimit), limit 40
+    check("per-source connection counting is active (connlimit feature detected)", "connlimit" in out, out)
+    time.sleep(3)
+    hold = textwrap.dedent('''
+        import socket, time
+        socks = []; ok = 0
+        for i in range(70):
+            s = socket.socket(); s.settimeout(1.2)
+            try: s.connect(("10.99.0.1", 8080)); ok += 1; socks.append(s)
+            except Exception: pass
+            time.sleep(0.03)
+        print(ok)
+    ''')
+    held = int(client(hold, timeout=60))
+    check("connection limit caps simultaneous connections from one source (limit 40, tried 70)", 35 <= held <= 45, f"{held} connected")
+    m = re.search(r"c_conn (\d+)", gcmd("COUNTERS"))
+    check("connlimit drop counter increments", bool(m) and int(m.group(1)) > 5)
+    time.sleep(3)
+
     # 5. UDP per-source rate limit
     before = udp_received()
     client(udp_flood)

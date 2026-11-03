@@ -62,6 +62,11 @@ test fw-script-harden {} -setup {setupFw nft {harden 1} $L} -body {
          [string match "*ip frag-off*" $s]
 } -result {1 1 0 1 1 1 1}
 
+test fw-script-connlimit-set-has-no-timeout {kernel rejects timeouts on connlimit sets} -setup {setupFw nft {harden 1} $L} -body {
+    set s [::tg::fw::nftScript 1 1]
+    list [regexp {set conn4 \{ type ipv4_addr; flags dynamic; size} $s] [regexp {set syn4 \{ type ipv4_addr; flags dynamic,timeout} $s]
+} -result {1 1}
+
 test fw-script-noconnlimit {} -setup {setupFw nft {harden 1} $L} -body {
     string match "*ct count*" [::tg::fw::nftScript 1 0]
 } -result 0

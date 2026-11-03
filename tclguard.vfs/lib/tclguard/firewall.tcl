@@ -223,7 +223,9 @@ proc ::tg::fw::nftScript {harden connlimit} {
         foreach nm {syn4 syn6 udp4 udp6 conn4 conn6} {
             if {$nm in {conn4 conn6} && !$connlimit} continue
             set ty [expr {[string index $nm end] eq "4" ? "ipv4_addr" : "ipv6_addr"}]
-            append s "    set $nm \{ type $ty; flags dynamic,timeout; timeout 1m; size 262144; \}\n"
+            # connlimit elements cannot carry a timeout (the kernel rejects it), the others expire
+            set flags [expr {$nm in {conn4 conn6} ? "flags dynamic; size 262144;" : "flags dynamic,timeout; timeout 1m; size 262144;"}]
+            append s "    set $nm \{ type $ty; $flags \}\n"
         }
         foreach c {c_invalid c_bogus c_frag c_icmp c_syn c_conn c_udp} { append s "    counter $c \{ \}\n" }
         append s "    chain guard \{\n"
