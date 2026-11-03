@@ -1480,6 +1480,7 @@ proc ::tg::gui::run {} {
     wm geometry . 1280x820
     wm minsize . 1060 700
     wm protocol . WM_DELETE_WINDOW ::tg::gui::quit
+    wm deiconify .
     build
     ::tg::engine::start
     showPage overview

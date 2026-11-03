@@ -63,7 +63,7 @@ A systemd unit is in [packaging/tclguard.service](packaging/tclguard.service).
 * **UDP needs the `udp` extension** (tcludp). The game server sees every player as `127.0.0.1` (the relay's upstream socket); per-player IP bans inside the game won't work through a UDP relay.
 * **No TLS termination.** HTTPS works in `tcp` passthrough mode (connection-level protection only). For full HTTP inspection of HTTPS, terminate TLS elsewhere (Caddy, nginx, Cloudflare) and put TclGuard behind it with the `http` listener.
 * **IPv6 listening** (`bind ::`) is implemented and its address logic and nftables rules are tested, but the end-to-end socket path could not be exercised in the build environment (no IPv6 stack). Treat as beta.
-* **Windows**: the Windows paths (`netsh` firewall rule, `netstat` scan, GUI) are implemented and their command/parse logic is unit-tested, but TclGuard has not yet been run on a real Windows machine. Linux is the verified platform.
+* **Windows**: the Windows starpack was built and passes the self-test and renders the GUI **under Wine**, and the `netsh` firewall rule and `netstat` scan have unit-tested command/parse logic, but TclGuard has not been run on a real Windows machine. Linux is the verified platform.
 * **Kernel hardening** drops *all* IP fragments and invalid-state packets, and rate-limits ICMP. Disable those options (Settings / config) if you run something that relies on them (some VPNs, VoIP).
 
 ## Verification
@@ -82,19 +82,22 @@ Everything below was run against this code:
 
 An independent review of the HTTP/TCP/UDP/firewall/control code found, and this release fixes: request smuggling through chunk trailers and through an Upgrade request with a body, a use-after-close leak, an uncaught error on a malformed cookie, two CPU-wedge patterns (floods of blank lines / tiny chunks), a UDP descriptor leak, descriptor budgeting across UDP sessions, byte-offset drift in log watchers on invalid UTF-8, underscore-spelled `X_Real_IP` spoofing, and non-canonical keys reaching firewall commands. UDP reputation learning is now off by default because UDP addresses can be forged.
 
-## Building the starpack
+## Getting and building the starpack
 
-The application is the VFS tree in `tclguard.vfs/` (`main.tcl` + `lib/`). A **starpack** is that tree wrapped around a Tcl runtime ("tclkit") into one executable.
+**Prebuilt single-file starpacks are in [`releases/`](releases/)** (Linux x86-64 and Windows x86-64, about 5-6 MB each, Tcl + Tk + UDP + TclGuard in one file; see `releases/README.md` for exactly what was verified on each platform and `SHA256SUMS` to check them).
+
+To build your own:
 
 ```sh
-make kit                                        # dist/tclguard.kit  (payload; run with any tclkit: tclkit tclguard.kit)
-make starpack RUNTIME=/path/to/tclkit-8.6-linux-x86_64     # single-file Linux program
-make starpack RUNTIME=/path/to/tclkit-8.6-win64.exe         # single-file Windows tclguard.exe
+tools/build-tclkit.sh linux        # ~15 min: builds a tclkit with Tk, tcludp, Thread, Metakit (KitCreator)
+tools/build-tclkit.sh win64        # cross-compile for Windows (needs mingw-w64)
+cp .tclkit-build-linux/kc/tclkit-8.6.14 /tmp/rt     # wrap using a COPY of the runtime
+make starpack RUNTIME=/tmp/rt                       # -> dist/tclguard
 ```
 
-`build.tcl` writes either a Metakit payload (classic tclkit, run it *with* a tclkit so `vfs::mk4` is available) or a zip payload. Use a tclkit that includes **Tk, `udp` (tcludp) and `vfs`**; [KitCreator](https://kitcreator.rkeene.org/) can build one with `KITCREATOR_PKGS="udp"`. Without `udp` the game-UDP relay is unavailable but everything else works; Tk is only needed for the GUI (headless mode runs without it).
+`build.tcl` writes a Metakit payload (run it *with* a tclkit that has `vfs::mk4`) or a zip payload (`--format zip`, needs only tclsh + tcllib). The payload is platform independent, so one machine can wrap both runtimes. The runtime must include **Tk** (for the GUI; headless mode works without it) and **`udp`** (tcludp, for the game-UDP relay).
 
-Without any runtime, `tclsh8.6 tclguard.vfs/main.tcl` runs it directly (needs `tcl`, `tk` for the GUI, `tcl-udp` for UDP).
+Prebuilt tclkits found online are old and lack Tk and `udp`, which is why `tools/build-tclkit.sh` exists. Without any runtime, `tclsh8.6 tclguard.vfs/main.tcl` runs it directly (needs `tcl`, `tk` for the GUI, `tcl-udp` for UDP).
 
 ## Layout
 
@@ -102,7 +105,9 @@ Without any runtime, `tclsh8.6 tclguard.vfs/main.tcl` runs it directly (needs `t
 tclguard.vfs/main.tcl            entry point, CLI
 tclguard.vfs/lib/tclguard/       util  config  bans  firewall  limiter  tcpproxy  httpproxy
                                  udprelay  monitor  logwatch  control  engine  gui  selftest
-build.tcl  Makefile              packaging
+build.tcl  Makefile              packaging;  tools/build-tclkit.sh builds the runtimes
+releases/                        prebuilt starpacks (+ checksums)
+experimental/xdp/                XDP/eBPF spike (see docs/XDP.md)
 tests/                           unit (*.test), kernel/, integration/, gui/ (screenshot driver)
 docs/                            CONFIG.md  DEPLOYMENT.md
 packaging/tclguard.service       systemd unit

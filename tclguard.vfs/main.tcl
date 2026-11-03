@@ -19,6 +19,9 @@ package require Tcl 8.6
 package require tclguard
 
 set ::tg::quit 0
+# A Tk-enabled kit creates the root window at startup; hide it so command-line
+# use never flashes an empty window (the GUI shows it again when it starts).
+catch {wm withdraw .}
 
 proc usage {} {
     puts {TclGuard - DDoS protection for game servers and home-hosted websites
@@ -297,3 +300,6 @@ switch -glob -- $cmd {
     selftest { exit [::tg::selftest::run [lrange $argv 1 end]] }
     default  { cmdRun $argv }
 }
+
+# Tk kits stay in the event loop when the script ends, so always leave explicitly.
+exit 0
