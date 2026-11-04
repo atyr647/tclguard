@@ -1,8 +1,9 @@
 name: stress-win
 
-# Repeats the keep-alive pattern that stalled once on Windows in CI, against the shipped program and against a control
-# built from the same source on the unpatched Tcl runtime, and counts stalls. One fresh runner per run, because a run
-# uses up the machine's ephemeral ports for a couple of minutes.
+# Repeats the keep-alive pattern that stalled once on Windows in CI against the shipped program and counts stalls (the
+# Windows runtime carries a patch to Tcl's socket driver, tools/patches/). One fresh runner per run, because a run uses
+# up the machine's ephemeral ports for a couple of minutes. The control used when the patch was validated (same source,
+# unpatched runtime: 0 stalls in 8,000 sessions) is not kept in the repository; see docs/LOAD.md.
 on:
   workflow_dispatch:
 
@@ -11,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [control, shipped]
+        variant: [shipped]
         rep: [1, 2, 3]
     runs-on: windows-latest
     timeout-minutes: 20
@@ -20,7 +21,6 @@ jobs:
       - name: Keep-alive stress (${{ matrix.variant }}, run ${{ matrix.rep }})
         shell: pwsh
         run: |
-          if ('${{ matrix.variant }}' -eq 'control') { $env:TG_CMD = (Resolve-Path .\tests\load\control\tclguard-windows-control-console.exe).Path }
-          else { $env:TG_CMD = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path }
+          $env:TG_CMD = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
           python -u tests/integration/stress_keepalive.py 3000 200
           exit $LASTEXITCODE

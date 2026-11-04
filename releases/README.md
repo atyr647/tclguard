@@ -9,7 +9,9 @@
 | `tclguard-windows-x86_64-console.exe` | The same program flagged as a console app: use this one from Command Prompt / PowerShell so `selftest`, `ctl status`, `check` print their output | ~12.3 MB |
 
 Each is **one self-contained file**: Tcl 8.6.14, Tk 8.6.14, tcludp 1.0.11, tcltls (1.7.22 on Linux and Windows, 2.0.1 on macOS) with a static OpenSSL 3.5.9, Metakit and the TclGuard
-application. No installer, no Tcl installation needed.
+application. No installer, no Tcl installation needed. **The Windows runtime carries one patch to Tcl's own socket driver** (`tools/patches/`, about 120 lines of C, explained there
+and in `docs/LOAD.md`): it makes a Windows core about five times faster under load; it was checked against a control built without it.
+**The Intel Mac program** is run through the integration, TLS, update, installer and GUI suites on a real Intel runner (`macos-15-intel`) on every push.
 
 ```sh
 chmod +x tclguard-linux-x86_64

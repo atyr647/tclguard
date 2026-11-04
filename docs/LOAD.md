@@ -32,7 +32,8 @@ single-file program (`releases/tclguard-linux-x86_64`).
 | recovery | nothing | 256 req/s, p50 1.6 ms, 0 errors; all tables empty, no bans left | 6% |
 
 * **Peak capacity** (every per-address limit raised, so the guard is the only limit): 5,300 requests/s at the start of the run and 7,400 requests/s at
-  the end. No degradation: throughput did not fall after 20 minutes of attacks.
+  the end of the *first* test run; after the hot-path work (memoised address parsing, cheaper per-request checks, whole chunks forwarded at once) the same test measures
+  **9,200-10,100 requests/s** on the Linux runner. No degradation: throughput did not fall after 20 minutes of attacks.
 * **Memory** stayed between 18 and 39 MB (the rise came with the first TLS flood and then stayed flat); **descriptors** peaked at 445
   (the planned cap, see below). After recovery every internal table (connections, per-address state, HTTP state, UDP sessions, bans, strikes) was empty.
 
@@ -107,31 +108,44 @@ run as administrator/root). 90 s soak, 16 visitors, 256 requests/s offered.
 | mixed soak | 235, p99 45 ms | 237, p99 24 ms | 79% -> 47% |
 | request flood just under the limits | 155, p50 33 ms | 153 | 84% |
 
-Capacity on macOS: 3,900 to 5,800 requests/s on one core. The 2,096 errors in the Tcl-only connection flood were all `local_ports`: the *generator* ran out of
+Capacity on macOS: 3,900 to 5,800 requests/s on one core (4,500-8,200 after the hot-path work). The 2,096 errors in the Tcl-only connection flood were all `local_ports`: the *generator* ran out of
 macOS's 16,000 ephemeral ports (a measurement limit, not the guard refusing anyone); the real finding is the 652 ms p99, which `pf` removes.
 
-**Windows is much weaker, and the firewall does not rescue it:**
+**Windows was much weaker. Before and after the fix described below** (the same flood, real Windows Server 2025 runner, visitors offering 256 req/s):
 
-| Phase | visitors, Tcl only | visitors, `netsh` bans |
-|---|---|---|
-| baseline | 260 req/s, p50 1.2 ms | 259 |
-| capacity, no limits | **830 requests/s** (Linux: 5,300) | 825 |
-| request flood just under the limits | **45 req/s, p50 193 ms** | 44 |
-| connection flood | 180 req/s, 125 errors | 191, 46 errors |
-| garbage / smuggling | 168 req/s, 936 errors | 154, 46 errors |
-| TLS handshake flood | 157 req/s, 508 errors | 143, 875 errors |
-| UDP flood | 258 | 258 |
-| **mixed soak (every attack at once)** | **4 req/s, 14,600 errors, p99 7 s** | **4 req/s, 14,600 errors** |
-| recovery | 257 | 260 |
+| Phase | before: Tcl 8.6.14 as released | after: patched socket driver (+ the hot-path work) | after, with `netsh` bans |
+|---|---|---|---|
+| baseline | 260 req/s, p50 1.2 ms | 262 req/s, p50 0.6 ms | 262 |
+| capacity, no limits | **830 requests/s** | **about 4,000 requests/s** (3,970-4,030, still 3,340-3,780 at the end of the run) | 3,970 |
+| request flood just under the limits | **45 req/s, p50 193 ms** | **138 req/s, p50 55 ms** | 138 |
+| connection flood | 180 req/s, 125 errors; about 140-220 connections accepted per second | 176 req/s, 105 errors; about 335 accepted per second | 162, 134 errors |
+| garbage / smuggling | 168 req/s, 936 errors | 218 req/s, 0 errors | 212, 0 errors |
+| TLS handshake flood | 157 req/s, 508 errors | 185 req/s, 1,005 errors | 166, 216 errors |
+| UDP flood | 258 | 261 | 261 |
+| **mixed soak (every attack at once)** | **4 req/s, 14,600 errors, p99 7 s** | **136 req/s, 1,278 errors (9% of visitors' requests), p99 67 ms** | 117 req/s, 4,179 errors |
+| recovery | 257 | 261 | 262 |
 
-Every one of those errors is `refused`: **the operating system refused the connection because the listen queue was full**, before the guard could see it (so it cannot ban
-the sender, and `netsh` bans, which only start after a few strikes, do not help). The guard accepted only about 140 new connections per second while the connection flood ran (Linux: about 29,000 per second rejected). I believe the cause is Tcl's own event loop
-on Windows, which passes every socket event through a helper thread, but I did not profile it. In the mixed soak the attackers' connection attempts
-keep the queue full and ordinary visitors cannot get in, for as long as the attack lasts; the guard recovers the moment it stops (recovery: 257-260 req/s).
+Every error is `refused`: **the operating system refused the connection because the listen queue was full**, before the guard could see it (so the guard cannot ban the
+sender). Windows is still the weakest platform: one core takes about 4,000 requests/s (Linux about 10,000 in the same run, macOS 4,500-8,000), and under a determined connection
+flood about one in ten visitor requests still gets `refused` (before the fix: nearly all of them).
 
-What this means in practice: **on Windows TclGuard is fine for a hobby-sized server under ordinary hostility (scanners, a single abuser, slowloris, malformed requests) but
-it will not hold a determined connection flood**, and the kernel firewall cannot change that. For a Windows host that matters, put the guard on a Linux VPS in front (the setup the
-README recommends) or run it on Linux. I did not find a cheap in-process fix.
+**What the cause turned out to be, and what was changed.** Measured with `tests/load/winbench.tcl` (Tcl's event loop alone, no TclGuard): on the Windows runner a plain
+Tcl client/server pair could bounce only about 1,000 lines per second (Python on the same machine: 20,700). Tcl 8.6's Windows socket driver sends a *synchronous* message
+to a helper thread around every `recv`, every `send` and every "is it really readable?" check, so each I/O costs several thread switches, and it accepts one connection
+per round trip through that thread. `tools/patches/tcl-8.6.14-winsock-nonblocking.diff` (about 120 lines of C, `win/tclWinSock.c` only, explained in
+`tools/patches/README.md`) removes those messages for non-blocking sockets, updates the shared ready flags with interlocked operations, and makes the listener try
+`accept()` again immediately. Result in the same benchmark: **1,000 -> 4,300 round trips/s for one pair, 1,050 -> 12,600 for 16 pairs**.
+
+**The first version of the patch was wrong, and the stress test caught it.** It kept a `select()` call on a socket that WinSock was still watching (the original
+Tcl code unselects first, "so select will work correctly"). One real CI run then stalled a keep-alive TLS connection for 5 seconds. `tests/integration/stress_keepalive.py`
+(`stress-win.yml`) repeats exactly that pattern: on the unpatched runtime (control, built from the same source) 8,000 sessions of 5 requests on a plain and a TLS
+connection did not stall once; the first patch version stalled on the 1,300th TLS session. The final patch has no `select()` there, and ran 3 x 6,000 sessions on three
+fresh runners without a stall or error while being about twice as fast as the control (6,000 sessions in 42 s instead of 90). That is evidence, not a proof: the change
+is to a 20-year-old part of Tcl, it has been exercised for 18,000 keep-alive sessions, all the suites on real Windows, and three flood runs, but not for months in production.
+
+What this means in practice: **on Windows TclGuard now holds ordinary hostility and a moderate connection flood**; it still does not match Linux, and a determined
+flood from many addresses will cost some visitors a refused connection. For a Windows host that matters, put the guard on a Linux VPS in front (the setup the README
+recommends) or run it on Linux.
 
 ## What this test does not show
 * The namespace run crosses a real kernel network path but still **one machine, one virtual link**: no physical NIC, no interrupt moderation, no packet loss, and

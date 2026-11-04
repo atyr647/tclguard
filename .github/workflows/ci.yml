@@ -165,6 +165,13 @@ jobs:
           python -u test_http.py
           python -u test_features.py
           Pop-Location
+      - name: Keep-alive stress (the Windows runtime has a patched socket driver; 1,500 sessions each of plain and TLS must not stall)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 8
+        run: |
+          $env:TG_CMD = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
+          python -u tests/integration/stress_keepalive.py 1500 120
+          if ($LASTEXITCODE -ne 0) { throw "keep-alive stress failed" }
       - name: IPv6 end to end (starpack, real Windows)
         if: ${{ !cancelled() }}
         timeout-minutes: 8
