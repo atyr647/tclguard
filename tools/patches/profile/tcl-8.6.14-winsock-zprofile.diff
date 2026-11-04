@@ -104,13 +104,19 @@
  
      /*
       * Make sure the socket event handling window is cleaned-up for, at
-@@ -2816,13 +2848,16 @@
+@@ -2816,13 +2848,22 @@
       */
  
      if (GOT_BITS(statePtr->readyEvents, FD_ACCEPT)) {
 +	LONGLONG pev0 = pnow();
 +	if (plast) { InterlockedExchangeAdd64(&pv[P_GAP], pev0 - plast); InterlockedIncrement(&pn[P_GAP]); }
 +	plast = pev0;
++	{
++	    static LONGLONG plastdump; LARGE_INTEGER pf;
++	    QueryPerformanceFrequency(&pf);
++	    if (!plastdump) { plastdump = pev0; }
++	    if (getenv("TG_SOCKPROF") && pev0 - plastdump > 6 * pf.QuadPart) { PDump(); plastdump = pev0; }
++	}
  	for (fds = statePtr->sockets; fds != NULL; fds = fds->next) {
  	    /*
  	     * Accept the incoming connection request.
@@ -122,7 +128,7 @@
  
  	    /*
  	     * On Tcl server sockets with multiple OS fds we loop over the fds
-@@ -2863,7 +2898,8 @@
+@@ -2863,7 +2904,8 @@
  	     * and let SocketCheckProc queue additional FD_ACCEPT events.
  	     */
  
@@ -132,7 +138,7 @@
  
  	    /*
  	     * TclGuard patch: accepting is otherwise one connection per round trip through the socket
-@@ -3256,6 +3292,7 @@
+@@ -3256,6 +3298,7 @@
   *----------------------------------------------------------------------
   */
  
@@ -140,7 +146,7 @@
  static LRESULT CALLBACK
  SocketProc(
      HWND hwnd,
-@@ -3263,6 +3300,19 @@
+@@ -3263,6 +3306,19 @@
      WPARAM wParam,
      LPARAM lParam)
  {
@@ -160,7 +166,7 @@
      int event, error;
      SOCKET socket;
      TcpState *statePtr;
-@@ -3510,6 +3560,8 @@
+@@ -3510,6 +3566,8 @@
      ThreadSpecificData *tsdPtr;
      TcpState *statePtr = (TcpState *)instanceData;
      int notifyCmd;
@@ -169,7 +175,7 @@
  
      if (action == TCL_CHANNEL_THREAD_INSERT) {
  	/*
-@@ -3575,6 +3627,7 @@
+@@ -3575,6 +3633,7 @@
       */
  
      SendSelectMessage(tsdPtr, notifyCmd, statePtr);
