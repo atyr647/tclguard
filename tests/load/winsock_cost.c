@@ -10,6 +10,7 @@
  *      5  as 3, but Tcl's locking: the main thread holds a lock (an auto-reset event, as Tcl's socketListLock is) for the whole drain loop, and the pump thread takes it
  *         for every notification it handles
  *      6  as 5, but the main thread drains WITHOUT holding the lock
+ *      9  as 6 but the lock is a CRITICAL_SECTION (user mode) instead of an event: is the kernel wait in the message handler what collapses it?
  *      7  as 3, but the pump thread burns about 20 microseconds of CPU per notification (a slower message handler)
  *      8  as 3, but accepted sockets are registered for FD_CLOSE only (fewer notifications per connection)
  *      4  as 3 but the registrations are synchronous messages to the pump thread, three per connection (on, on, off), as in Tcl's driver
@@ -22,7 +23,7 @@
 #include <string.h>
 
 #define NOTIFY_MSG (WM_USER + 1)
-static HWND hwnd; static HANDLE hAcc, hReady, hLock; static int useLock, burn, regmask = FD_READ | FD_WRITE | FD_CLOSE;
+static HWND hwnd; static HANDLE hAcc, hReady, hLock; static CRITICAL_SECTION cs; static int useCs, useLock, burn, regmask = FD_READ | FD_WRITE | FD_CLOSE;
 static volatile LONG stop_pump, stop_clients;
 static int port = 19090;
 
@@ -33,7 +34,9 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (m == NOTIFY_MSG) {
         if (burn) { double t = now() + burn * 1e-6; while (now() < t) { } }
         if (useLock) WaitForSingleObject(hLock, INFINITE);
+        if (useCs) EnterCriticalSection(&cs);
         if (WSAGETSELECTEVENT(l) == FD_ACCEPT) SetEvent(hAcc);
+        if (useCs) LeaveCriticalSection(&cs);
         if (useLock) SetEvent(hLock);
         return 0;
     }
@@ -65,6 +68,7 @@ static DWORD WINAPI client(LPVOID a) {
 int main(int argc, char **argv) {
     WSADATA w; int mode = argc > 2 ? atoi(argv[2]) : 0, i; HANDLE th;
     hLock = CreateEventA(NULL, FALSE, TRUE, NULL); useLock = argc > 2 && (atoi(argv[2]) == 5 || atoi(argv[2]) == 6);
+    InitializeCriticalSection(&cs); if (argc > 2 && atoi(argv[2]) == 9) useCs = 1;
     if (argc > 2 && atoi(argv[2]) == 7) burn = 20;
     if (argc > 2 && atoi(argv[2]) == 8) regmask = FD_CLOSE;
     hAcc = CreateEventA(NULL, FALSE, FALSE, NULL); hReady = CreateEventA(NULL, TRUE, FALSE, NULL);

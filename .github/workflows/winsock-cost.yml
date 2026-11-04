@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        run: ['7', '8']
+        run: ['6', '9']
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
