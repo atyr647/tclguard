@@ -19,14 +19,10 @@ way), and connections are refused by the OS when the listen backlog fills while 
   nothing and clears the flag), and nothing calls `select()` on a socket that WSAAsyncSelect is still watching;
 * `TcpOutputProc` keeps the original synchronous ordering in the one place it matters — when `send()` returns
   `WSAEWOULDBLOCK` (buffer full) — and skips the messages otherwise;
-* **the listener takes every waiting connection (up to 16) out of the kernel's queue in one tight loop** and only then does the per-connection work. The
-  original accepts one connection per `FD_ACCEPT` notification; measured on a Windows runner with one flood generator, that design's accept rate collapsed from
-  about 2,700 per second to 30-70, while the same notification design draining in a loop held about 7,500 and a plain blocking `accept()` about 12,000
-  (`tests/load/winsock_cost.c`, `docs/WINDOWS-ACCEPT.md`). If the accept script closes the listener, the rest of the batch is closed;
-* **sockets are registered with `WSAAsyncSelect` by the calling thread itself** when a channel is created, closed, accepted or connected, instead of by a synchronous
-  message to the helper thread (about 100 microseconds each, three per connection). This and the batched accept above are only effective **together**: in a raw C accept loop
-  under the same flood, batching without the direct registration managed 537 accepts per second and fell to 0, direct registration without batching 28-69, both together 9,275
-  (`tests/load/winsock_cost.c`, modes 1-4). The blocking-socket paths still use the original synchronous messages;
+* after accepting a connection the listener is marked as having another request pending, so the next pass of the event
+  loop tries `accept()` again immediately instead of waiting for WinSock's next `FD_ACCEPT` message (which is posted only after
+  the socket thread has noticed the previous accept — one connection per thread round trip, a few hundred a second);
+  with nothing waiting the extra attempt simply finds nothing and clears the flag;
 * `readyEvents` (written by both threads) is updated with interlocked operations on the touched paths instead of
   plain read-modify-write.
 

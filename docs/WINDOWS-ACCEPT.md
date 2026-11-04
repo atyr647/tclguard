@@ -1,6 +1,6 @@
 # Windows connection floods: what limits the guard, and the options for fixing it properly
 
-Status: option A below was **tried and did not help**; the rest has not been implemented. Numbers are from GitHub's Windows Server 2025 runner (`acceptbench.yml`,
+Status: options A (and two variants of it, below) were **tried and did not help**; the cause of the slow accept path in Tcl is **not yet found**. The rest has not been implemented. Numbers are from GitHub's Windows Server 2025 runner (`acceptbench.yml`,
 one fresh runner per variant, 150 attacker workers from 500 source addresses for 20 s, loopback). They are the ceiling of *one* Tcl thread.
 
 ## Measured
@@ -79,3 +79,44 @@ Windows runtime is the stress-tested one from before. What the experiments did s
 A runtime built with timing probes (QueryPerformanceCounter around `accept()`, the channel set-up, the notifier wake-up and the event-loop turn, printed at exit)
 run in `acceptbench.yml` would show where the 1.2 ms goes in about an hour of work. Until then the only option with evidence behind it is **B** (a native acceptor: a blocking
 `accept()` loop in its own thread is the one design shown to reach thousands per second on this machine), or **D** (something in front).
+
+
+## Round two: the accept path measured inside Tcl, and a C model that did not transfer
+
+**Probes in the driver** (a Windows runtime with timing probes, run through `acceptbench` under the flood; the probe patch has since been removed): per accepted connection, the
+`accept()` call itself took 380 microseconds on average, rising to 750 (and about 95 ms per call at the very end, when only a trickle was left); three synchronous messages to the
+helper thread took 96 microseconds each; creating the channel 118, running the accept callback 133 (of which `close` 41), `getnameinfo` 5. And the **rate collapsed over the run**: about
+2,200 accepts per second in the first 6 seconds, 445 in the next 6, about 10 in the last 6. That is a different picture from "a constant 1.2 ms per accept".
+
+**A raw C accept loop under the same flood** (`tests/load/winsock_cost.c`, `winsock-cost.yml`, one runner per mode, the same `tgload connflood` generator as every other test here):
+
+| accept loop (no Tcl) | accepts per second |
+|---|---|
+| plain blocking `accept()` | about 12,000, steady |
+| `WSAAsyncSelect(FD_ACCEPT)`, one accept per notification (Tcl's design) | 1,400-2,700, then **28-69** |
+| the same, draining every pending connection per notification | 7,500-11,000, steady |
+| draining plus registering every accepted socket directly (`WSAAsyncSelect` on, off) | 9,275, steady |
+| draining plus registering by **synchronous messages** to the pump thread, three per connection (Tcl's pattern) | 537, then **0** |
+
+So in C, *both* "one accept per notification" and "synchronous registration messages" are enough to collapse the accept rate, and removing both gives thousands per second.
+
+**The patches that did exactly that did not help in Tcl.** A patch that drains the pending connections per notification (up to 16, in a tight loop) *and* registers sockets directly instead of by
+synchronous message was built and measured on its own runner (`acceptbench`, bare accept-and-close under the flood):
+
+| runtime | accepts per second |
+|---|---|
+| without any socket patch | 604, 629, 711, 731, 828 |
+| first patch (reads and writes; the one that ships) | 676, 709, 742, 924, 940 |
+| batched accept only | 587, 773 |
+| direct registration only (option A) | 532, 542, 872 |
+| both together, built cleanly | 504, 618 |
+| Python, blocking `accept()` | 2,955, 5,643, 6,555, 7,883, 8,781, 13,382 |
+
+(Two of those builds, "batched" and the first "both", carried a stale probe patch that had applied partly because the build script did not clear patches left in a reused build directory;
+that is fixed in `tools/build-tclkit.sh`, and the "both together, built cleanly" row is a clean build whose source was compared byte for byte with the intended patch.)
+
+**So the C model is not predictive for Tcl**, and I do not know why. Candidates, none tested: something else the Tcl driver does per connection that the model lacks (the notifier
+thread and its wake-ups, the `SO_` options Tcl sets, `Tcl_CreateChannel`'s own bookkeeping, a lock the socket thread shares with the main thread, the 10,000-message limit of a Windows
+message queue); or an interaction in Tcl's event loop that keeps `accept()` slow. The shipped Windows runtime is therefore still the stress-tested first patch. The next step that would
+settle it is the probe build again, on the driver as patched in the "both together" row: if `accept()` is then fast and the time is elsewhere, the probes say where; if `accept()` is still
+hundreds of microseconds, the cause is in how Tcl drives the listening socket, and a native acceptor (option B) would sidestep it.
