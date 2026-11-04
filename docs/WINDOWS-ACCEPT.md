@@ -98,7 +98,7 @@ helper thread took 96 microseconds each; creating the channel 118, running the a
 | draining plus registering every accepted socket directly (`WSAAsyncSelect` on, off) | 9,275, steady |
 | draining plus registering by **synchronous messages** to the pump thread, three per connection (Tcl's pattern) | 537, then **0** |
 
-So in C, *both* "one accept per notification" and "synchronous registration messages" are enough to collapse the accept rate, and removing both gives thousands per second.
+Read this table with the next section in mind: **each row is a single run, and runs of the same binary were later found not to agree**, so the "collapse" rows are a hint, not a measured cause.
 
 **The patches that did exactly that did not help in Tcl.** A patch that drains the pending connections per notification (up to 16, in a tight loop) *and* registers sockets directly instead of by
 synchronous message was built and measured on its own runner (`acceptbench`, bare accept-and-close under the flood):
@@ -120,3 +120,30 @@ thread and its wake-ups, the `SO_` options Tcl sets, `Tcl_CreateChannel`'s own b
 message queue); or an interaction in Tcl's event loop that keeps `accept()` slow. The shipped Windows runtime is therefore still the stress-tested first patch. The next step that would
 settle it is the probe build again, on the driver as patched in the "both together" row: if `accept()` is then fast and the time is elsewhere, the probes say where; if `accept()` is still
 hundreds of microseconds, the cause is in how Tcl drives the listening socket, and a native acceptor (option B) would sidestep it.
+
+
+## Round three: the probes on the combined driver, and why the C model cannot be trusted
+
+**Probes on the clean combined driver** (batched accept + direct registration; probe patch `tools/patches/profile/`, run under the same flood): every accept event took a full batch of 16, so the
+queue is never short. Yet `accept()` took **296 microseconds each** in the first 6 seconds and **712** in the next (30-60 in the C model), the accept callback 145, `closesocket` 81, creating the
+channel only 8 (the three registrations now cost 20 each), and the socket thread's message handler **137 microseconds per message** (1.3 before) with 4,320 `FD_ACCEPT` notifications for 13,260 accepts.
+The rate still fell from about 2,200 per second to a trickle. So the work is not in the registration messages or in the channel set-up any more; the kernel's `accept()` itself is slow in this
+process, and the socket thread is slow too (it takes the shared lock for every message while the main thread holds it across the drain loop).
+
+**The C model then failed its own repeat.** Further modes, one fresh runner each:
+
+| mode (no Tcl, same flood) | accepts per second |
+|---|---|
+| drain + direct registration (mode 3), two runs | 6,445 and 9,275 |
+| the same with a message handler that burns 20 microseconds per message (mode 7) | 9,416 (no collapse) |
+| the same with fewer notifications per connection (mode 8) | 4,447 (no collapse) |
+| the handler takes a kernel-event lock per message, the lock Tcl uses (mode 6) | **571 (collapsed to 0)**, and on the repeat **4,250 (no collapse)** |
+| the same with a user-mode lock (mode 9) | 4,332 |
+
+The same binary gave 571 once and 4,250 the next time, so single C runs cannot separate causes on these runners, and the "both are enough to collapse" reading of round two is withdrawn. The Tcl
+numbers, by contrast, are consistent: about 500-1,000 accepts per second in more than twenty runs of five different driver variants, always collapsing over the run.
+
+**What this leaves.** Nothing tried changes the Tcl accept rate (first patch, direct registration, batching, both), the cause of the slow `accept()` inside the Tcl process is not identified, and the
+cheap experiments are exhausted: each further idea needs a driver build (about 40 minutes with a measurement) and the evidence so far says the effect of such changes is not predictable from a model.
+The sensible choices are **D** (put something in front of a Windows guard that has to survive connection floods), or **B** (a native acceptor, the one design measured at thousands per second on
+these runners: Python's blocking `accept()` loop against the same flood, 2,955 to 13,382 per second), with the caveat that B has not been measured inside this process either.
