@@ -1,0 +1,67 @@
+name: acceptbench
+
+# Where does a Windows connection flood's cost go? Bare Tcl accept-and-close, a guard-like "state then drop", the same on the
+# runtime without the socket patch, and what Python (no Tcl) manages on the same machine. Flood: tests/load/tgload connflood.
+on:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v5
+        with: { go-version: stable }
+      - name: Build the flood generator
+        run: cd tests/load/tgload; go build -o ../tgload-bin.exe .
+      - name: Accept benchmark
+        shell: pwsh
+        run: |
+          git show dd2bcf5:releases/tclguard-windows-x86_64-console.exe > old.exe       # same program, runtime WITHOUT the socket patch
+          $new = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
+          $old = (Resolve-Path .\old.exe).Path
+          $gen = (Resolve-Path .\tests\load\tgload-bin.exe).Path
+          function Flood($port) { & $gen connflood -addr "127.0.0.1:$port" -workers 150 -dur 20s -srcbase 127.0.3.0 -srcn 500 2>&1 | Select-Object -Last 3 }
+          function Variant($label, $exe, $mode) {
+            $env:ACCEPT_PORT = "18080"; $env:ACCEPT_MODE = $mode
+            $out = "acc-$label.txt"; Remove-Item $out -ErrorAction SilentlyContinue
+            $p = Start-Process -FilePath $exe -ArgumentList @('eval','tests\load\winbench.tcl','accept','24') -RedirectStandardOutput $out -PassThru -NoNewWindow
+            Start-Sleep 4
+            Write-Host "=== $label"
+            Flood 18080
+            $p | Wait-Process -Timeout 20 -ErrorAction SilentlyContinue
+            if (-not $p.HasExited) { $p | Stop-Process -Force }
+            Get-Content $out
+          }
+          Variant 'patched-bare'   $new 'bare'
+          Variant 'patched-state'  $new 'state'
+          Variant 'unpatched-bare' $old 'bare'
+          Variant 'unpatched-state' $old 'state'
+          Write-Host "=== python, no Tcl"
+          $py = Start-Process python -ArgumentList @('tests/load/accept_ref.py','18080','24') -RedirectStandardOutput acc-py.txt -PassThru -NoNewWindow
+          Start-Sleep 3; Flood 18080; $py | Wait-Process -Timeout 20 -ErrorAction SilentlyContinue; Get-Content acc-py.txt
+          Write-Host "=== listen queue depth (Tcl listener that is not accepting), then Python's"
+          $env:ACCEPT_PORT = "18081"
+          $b = Start-Process -FilePath $new -ArgumentList @('eval','tests\load\winbench.tcl','backlog','30') -PassThru -NoNewWindow
+          Start-Sleep 3; python tests/load/accept_ref.py backlog 18081; $b | Stop-Process -Force
+          $q = Start-Process python -ArgumentList @('-c','import socket,time;s=socket.socket();s.bind(("127.0.0.1",18082));s.listen(socket.SOMAXCONN);time.sleep(40)') -PassThru -NoNewWindow
+          Start-Sleep 2; python tests/load/accept_ref.py backlog 18082; $q | Stop-Process -Force
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: stable }
+      - run: cd tests/load/tgload && go build -o ../tgload-bin .
+      - name: Reference on Linux
+        run: |
+          chmod +x releases/tclguard-linux-x86_64
+          for mode in bare state; do
+            ACCEPT_PORT=18080 ACCEPT_MODE=$mode releases/tclguard-linux-x86_64 eval tests/load/winbench.tcl accept 24 > acc-$mode.txt &
+            sleep 3
+            echo "=== linux $mode"; tests/load/tgload-bin connflood -addr 127.0.0.1:18080 -workers 150 -dur 20s -srcbase 127.0.3.0 -srcn 500 2>&1 | tail -3
+            wait; cat acc-$mode.txt
+          done

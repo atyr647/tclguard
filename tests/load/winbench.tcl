@@ -101,14 +101,37 @@ switch -- $section {
         }
     }
     accept {
+        # ACCEPT_MODE=bare : accept, count, close (the cheapest thing a Tcl server can do with a connection)
+        # ACCEPT_MODE=state: what a guard does before it can decide: per-connection state, a non-blocking channel, a read handler
+        #                    and a timeout timer, then drop it (the cost of a refused/banned connection)
         set ::acc 0
-        proc acc {c a p} { incr ::acc; close $c }
+        set mode [expr {[info exists ::env(ACCEPT_MODE)] ? $::env(ACCEPT_MODE) : "bare"}]
+        if {$mode eq "state"} {
+            proc drop {c} { catch {after cancel $::to($c)}; unset -nocomplain ::st($c) ::to($c); catch {close $c} }
+            proc rd {c} { catch {read $c}; drop $c }
+            proc acc {c a p} {
+                incr ::acc
+                set ::st($c) [list $a $p [clock milliseconds]]
+                fconfigure $c -blocking 0 -buffering none -translation binary
+                fileevent $c readable [list rd $c]
+                set ::to($c) [after 5000 [list drop $c]]
+                drop $c
+            }
+        } else {
+            proc acc {c a p} { incr ::acc; close $c }
+        }
         socket -server acc -myaddr 127.0.0.1 $::env(ACCEPT_PORT)
-        puts "accept    listening on $::env(ACCEPT_PORT) for $secs s"
+        puts "accept    ($mode) listening on $::env(ACCEPT_PORT) for $secs s"
         after [expr {$secs * 1000}] {set ::done 1}
         set t0 [clock milliseconds]
         vwait ::done
-        puts [format "accept    %8.0f connections accepted and closed per second" [expr {$::acc / (([clock milliseconds]-$t0)/1000.0)}]]
+        puts [format "accept    (%s) %8.0f connections accepted and closed per second" $mode [expr {$::acc / (([clock milliseconds]-$t0)/1000.0)}]]
+    }
+    backlog {
+        # does not service events: how many connections does the operating system queue for a listener nobody is accepting from?
+        socket -server {apply {{c a p} {}}} -myaddr 127.0.0.1 $::env(ACCEPT_PORT)
+        puts "backlog   listening on $::env(ACCEPT_PORT); not accepting for $secs s"
+        after [expr {$secs * 1000}]
     }
 }
 exit 0
