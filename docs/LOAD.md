@@ -147,6 +147,11 @@ One more Windows finding, isolated with `winbench.tcl`: in Tcl 8.6.14 for Window
 timer never fires), while plain timers run at about 486,000 per second and the same test on Linux is fine. It is not in the patched driver (the unpatched runtime did the same)
 and TclGuard has no loop of that shape (its only `after idle` is a single call in the certificate code), so nothing was changed; it is a trap to avoid in any future code.
 
+**Where the accept cost goes, and what is still open:** [WINDOWS-ACCEPT.md](WINDOWS-ACCEPT.md). In short: with every variant on its own clean runner, bare Tcl accepts
+about 520-680 connections per second on Windows (the patch is worth about 1.3x there, not the 4-12x it gave reads and writes), Python on the same machine 2,955, Tcl on Linux
+11,000; the listen queue is 200; and during the flood the guard sat at 30-35% CPU with no strikes, because the operating system refuses connections at random so no single
+address is seen often enough to be banned. The figures "about 335 per second" above are from the flood test and include the guard's own per-connection work.
+
 What this means in practice: **on Windows TclGuard now holds ordinary hostility and a moderate connection flood**; it still does not match Linux, and a determined
 flood from many addresses will cost some visitors a refused connection. For a Windows host that matters, put the guard on a Linux VPS in front (the setup the README
 recommends) or run it on Linux.
