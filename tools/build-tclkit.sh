@@ -93,6 +93,10 @@ case $target in
     ./kitcreator 8.6.14 --enable-64bit --enable-aqua ;;
   win64)
     : "${TCLKIT:?set TCLKIT to a native tclkit (the linux one built above)}"
+    # Tcl 8.6's Windows socket driver does several synchronous cross-thread messages per recv/send/readable event, which
+    # caps a proxy at ~1 ms per request and makes it refuse connections under load. This patch (win/tclWinSock.c only)
+    # removes them for non-blocking sockets; see tools/patches/README.md. kitcreator applies tcl/patches/all/*.diff with patch -p1.
+    mkdir -p tcl/patches/all && cp "$ROOT/tools/patches/tcl-8.6.14-winsock-nonblocking.diff" tcl/patches/all/
     export TCLKIT PKG_CONFIG_LIBDIR=/usr/x86_64-w64-mingw32/lib/pkgconfig
     AR=x86_64-w64-mingw32-ar CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++ \
     RANLIB=x86_64-w64-mingw32-ranlib RC=x86_64-w64-mingw32-windres STRIP=x86_64-w64-mingw32-strip \

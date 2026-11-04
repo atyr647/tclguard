@@ -1,0 +1,177 @@
+--- a/win/tclWinSock.c
++++ b/win/tclWinSock.c
+@@ -307,6 +307,14 @@
+  * Simple wrapper round the SendMessage syscall.
+  */
+ 
++/*
++ * TclGuard patch: readyEvents is written by the socket thread (SocketProc) and by the Tcl thread.
++ * Plain |= / &= are read-modify-write and can lose each other's update, so the paths touched by
++ * the patch use interlocked operations.
++ */
++#define TG_SET_READY(st, bits)   InterlockedOr((volatile LONG *) &(st)->readyEvents, (LONG) (bits))
++#define TG_CLEAR_READY(st, bits) InterlockedAnd((volatile LONG *) &(st)->readyEvents, ~((LONG) (bits)))
++
+ #define SendSelectMessage(tsdPtr, message, payload)     \
+     SendMessageW((tsdPtr)->hwnd, SOCKET_SELECT,          \
+                 (WPARAM) (message), (LPARAM) (payload))
+@@ -768,6 +776,7 @@
+     int bytesRead;
+     DWORD error;
+     ThreadSpecificData *tsdPtr = (ThreadSpecificData *)TclThreadDataKeyGet(&dataKey);
++    int fastNb = GOT_BITS(statePtr->flags, TCP_NONBLOCKING); /* TclGuard: see below */
+ 
+     *errorCodePtr = 0;
+ 
+@@ -810,7 +819,19 @@
+      */
+ 
+     while (1) {
+-	SendSelectMessage(tsdPtr, UNSELECT, statePtr);
++	/*
++	 * TclGuard patch: for a NON-blocking socket do not send the synchronous UNSELECT/SELECT
++	 * messages to the socket thread (two thread switches each, on every recv()). Instead FD_READ
++	 * is cleared BEFORE recv(): data that arrives while/after we read makes WinSock post a fresh
++	 * FD_READ (it re-arms itself inside recv()), which sets the flag again. A flag set by an older
++	 * message for data we are about to consume only causes one harmless extra poll (the check
++	 * proc and recv() both cope with "nothing there").
++	 */
++	if (fastNb) {
++	    TG_CLEAR_READY(statePtr, FD_READ);
++	} else {
++	    SendSelectMessage(tsdPtr, UNSELECT, statePtr);
++	}
+ 
+ 	/*
+ 	 * Single fd operation: this proc is only called for a connected
+@@ -818,7 +839,9 @@
+ 	 */
+ 
+ 	bytesRead = recv(statePtr->sockets->fd, buf, bufSize, 0);
+-	CLEAR_BITS(statePtr->readyEvents, FD_READ);
++	if (!fastNb) {
++	    CLEAR_BITS(statePtr->readyEvents, FD_READ);
++	}
+ 
+ 	/*
+ 	 * Check for end-of-file condition or successful read.
+@@ -878,7 +901,9 @@
+ 	}
+     }
+ 
+-    SendSelectMessage(tsdPtr, SELECT, statePtr);
++    if (!fastNb) {
++	SendSelectMessage(tsdPtr, SELECT, statePtr);
++    }
+ 
+     return bytesRead;
+ }
+@@ -911,6 +936,7 @@
+     int written;
+     DWORD error;
+     ThreadSpecificData *tsdPtr = (ThreadSpecificData *)TclThreadDataKeyGet(&dataKey);
++    int fastNb = GOT_BITS(statePtr->flags, TCP_NONBLOCKING); /* TclGuard: see TcpInputProc */
+ 
+     *errorCodePtr = 0;
+ 
+@@ -936,7 +962,9 @@
+     }
+ 
+     while (1) {
+-	SendSelectMessage(tsdPtr, UNSELECT, statePtr);
++	if (!fastNb) {
++	    SendSelectMessage(tsdPtr, UNSELECT, statePtr);
++	}
+ 
+ 	/*
+ 	 * Single fd operation: this proc is only called for a connected
+@@ -968,7 +996,19 @@
+ 
+ 	error = WSAGetLastError();
+ 	if (error == WSAEWOULDBLOCK) {
+-	    CLEAR_BITS(statePtr->readyEvents, FD_WRITE);
++	    if (fastNb) {
++		/*
++		 * TclGuard patch: the send buffer is full (rare). Here the original ordering matters (a
++		 * FD_WRITE posted between the failed send and the clear would be lost and the channel
++		 * would stall), so take the original synchronous path: unselect, clear, re-select
++		 * (re-selecting posts FD_WRITE again if the socket is writable by now).
++		 */
++		SendSelectMessage(tsdPtr, UNSELECT, statePtr);
++		CLEAR_BITS(statePtr->readyEvents, FD_WRITE);
++		SendSelectMessage(tsdPtr, SELECT, statePtr);
++	    } else {
++		CLEAR_BITS(statePtr->readyEvents, FD_WRITE);
++	    }
+ 	    if (GOT_BITS(statePtr->flags, TCP_NONBLOCKING)) {
+ 		*errorCodePtr = EWOULDBLOCK;
+ 		written = -1;
+@@ -992,7 +1032,9 @@
+ 	}
+     }
+ 
+-    SendSelectMessage(tsdPtr, SELECT, statePtr);
++    if (!fastNb) {
++	SendSelectMessage(tsdPtr, SELECT, statePtr);
++    }
+ 
+     return written;
+ }
+@@ -2882,6 +2924,31 @@
+ 	     * async select handler and keep waiting.
+ 	     */
+ 
++	    if (GOT_BITS(statePtr->flags, TCP_NONBLOCKING)) {
++		/*
++		 * TclGuard patch: no synchronous messages to the socket thread. Poll with select();
++		 * if nothing is there, clear the flag and poll once more, so data that arrived
++		 * between the first poll and the clear is not forgotten (data arriving after the
++		 * clear makes WinSock post a fresh FD_READ).
++		 */
++		FD_ZERO(&readFds);
++		FD_SET(statePtr->sockets->fd, &readFds);
++		timeout.tv_usec = 0;
++		timeout.tv_sec = 0;
++		if (select(0, &readFds, NULL, NULL, &timeout) != 0) {
++		    SET_BITS(mask, TCL_READABLE);
++		} else {
++		    TG_CLEAR_READY(statePtr, FD_READ);
++		    FD_ZERO(&readFds);
++		    FD_SET(statePtr->sockets->fd, &readFds);
++		    timeout.tv_usec = 0;
++		    timeout.tv_sec = 0;
++		    if (select(0, &readFds, NULL, NULL, &timeout) != 0) {
++			TG_SET_READY(statePtr, FD_READ);
++			SET_BITS(mask, TCL_READABLE);
++		    }
++		}
++	    } else {
+ 	    SendSelectMessage(tsdPtr, UNSELECT, statePtr);
+ 
+ 	    FD_ZERO(&readFds);
+@@ -2895,6 +2962,7 @@
+ 		CLEAR_BITS(statePtr->readyEvents, FD_READ);
+ 		SendSelectMessage(tsdPtr, SELECT, statePtr);
+ 	    }
++	    }
+ 	}
+     }
+ 
+@@ -3263,7 +3331,7 @@
+ 
+ 	    if (GOT_BITS(event, FD_CLOSE)) {
+ 		statePtr->acceptEventCount = 0;
+-		CLEAR_BITS(statePtr->readyEvents, FD_WRITE | FD_ACCEPT);
++		TG_CLEAR_READY(statePtr, FD_WRITE | FD_ACCEPT);
+ 	    } else if (GOT_BITS(event, FD_ACCEPT)) {
+ 		statePtr->acceptEventCount++;
+ 	    }
+@@ -3283,7 +3351,7 @@
+ 	     * Inform main thread about signaled events
+ 	     */
+ 
+-	    SET_BITS(statePtr->readyEvents, event);
++	    TG_SET_READY(statePtr, event);
+ 
+ 	    /*
+ 	     * Wake up the Main Thread.
