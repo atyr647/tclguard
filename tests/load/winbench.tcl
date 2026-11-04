@@ -106,6 +106,30 @@ switch -- $section {
         #                    and a timeout timer, then drop it (the cost of a refused/banned connection)
         set ::acc 0
         set mode [expr {[info exists ::env(ACCEPT_MODE)] ? $::env(ACCEPT_MODE) : "bare"}]
+        if {$mode eq "thread"} {
+            # the listener(s) live in worker threads (each with its own event loop and socket helper thread); ACCEPT_THREADS=2 puts a second
+            # listener on 127.0.0.2 (same port) in a second thread, to see whether the limit is per thread
+            package require Thread
+            set n [expr {[info exists ::env(ACCEPT_THREADS)] ? $::env(ACCEPT_THREADS) : 1}]
+            set tids {}
+            for {set i 0} {$i < $n} {incr i} {
+                set ip 127.0.0.[expr {$i + 1}]
+                lappend tids [thread::create [format {
+                    set ::acc 0
+                    proc acc {c a p} { incr ::acc; close $c }
+                    socket -server acc -myaddr %s %s
+                    thread::wait
+                } $ip $::env(ACCEPT_PORT)]]
+            }
+            puts "accept    (thread x$n) listening on $::env(ACCEPT_PORT) for $secs s"
+            after [expr {$secs * 1000}] {set ::done 1}
+            set t0 [clock milliseconds]
+            vwait ::done
+            set total 0
+            foreach t $tids { set a [thread::send $t {set ::acc}]; incr total $a; puts "accept    thread $t accepted $a" }
+            puts [format "accept    (thread x%d) %8.0f connections accepted and closed per second in total" $n [expr {$total / (([clock milliseconds]-$t0)/1000.0)}]]
+            exit 0
+        }
         if {$mode eq "state"} {
             proc drop {c} { catch {after cancel $::to($c)}; unset -nocomplain ::st($c) ::to($c); catch {close $c} }
             proc rd {c} { catch {read $c}; drop $c }
