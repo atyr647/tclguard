@@ -117,7 +117,38 @@
  
      return written;
  }
-@@ -2882,6 +2924,31 @@
+@@ -2822,6 +2864,30 @@
+ 	     */
+ 
+ 	    TcpAccept(fds, newSocket, addr);
++
++	    /*
++	     * TclGuard patch: accepting is otherwise one connection per round trip through the socket
++	     * thread (WinSock only posts the next FD_ACCEPT after this accept() has been noticed there),
++	     * which caps a server at a few hundred connections a second and makes the OS refuse the rest
++	     * once its queue is full. Mark the listener as having another request pending so the next
++	     * pass of the event loop tries accept() again straight away; if nothing is waiting it simply
++	     * finds nothing and clears the flag again (see below). The accept script may have closed the
++	     * listener, so look it up again instead of trusting statePtr.
++	     */
++	    WaitForSingleObject(tsdPtr->socketListLock, INFINITE);
++	    {
++		TcpState *again;
++
++		for (again = tsdPtr->socketList; again != NULL; again = again->nextPtr) {
++		    if (again == statePtr && again->acceptProc != NULL
++			    && again->sockets != NULL && again->sockets->fd == eventPtr->socket) {
++			again->acceptEventCount++;
++			TG_SET_READY(again, FD_ACCEPT);
++			break;
++		    }
++		}
++	    }
++	    SetEvent(tsdPtr->socketListLock);
+ 	    return 1;
+ 	}
+ 
+@@ -2882,6 +2948,31 @@
  	     * async select handler and keep waiting.
  	     */
  
@@ -149,7 +180,7 @@
  	    SendSelectMessage(tsdPtr, UNSELECT, statePtr);
  
  	    FD_ZERO(&readFds);
-@@ -2895,6 +2962,7 @@
+@@ -2895,6 +2986,7 @@
  		CLEAR_BITS(statePtr->readyEvents, FD_READ);
  		SendSelectMessage(tsdPtr, SELECT, statePtr);
  	    }
@@ -157,7 +188,7 @@
  	}
      }
  
-@@ -3263,7 +3331,7 @@
+@@ -3263,7 +3355,7 @@
  
  	    if (GOT_BITS(event, FD_CLOSE)) {
  		statePtr->acceptEventCount = 0;
@@ -166,7 +197,7 @@
  	    } else if (GOT_BITS(event, FD_ACCEPT)) {
  		statePtr->acceptEventCount++;
  	    }
-@@ -3283,7 +3351,7 @@
+@@ -3283,7 +3375,7 @@
  	     * Inform main thread about signaled events
  	     */
  

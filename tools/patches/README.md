@@ -18,6 +18,10 @@ way), and connections are refused by the OS when the listen backlog fills while 
   arrives in between is never forgotten;
 * `TcpOutputProc` keeps the original synchronous ordering in the one place it matters — when `send()` returns
   `WSAEWOULDBLOCK` (buffer full) — and skips the messages otherwise;
+* after accepting a connection the listener is marked as having another request pending, so the next pass of the event
+  loop tries `accept()` again immediately instead of waiting for WinSock's next `FD_ACCEPT` message (which is posted only after
+  the socket thread has noticed the previous accept — one connection per thread round trip, a few hundred a second);
+  with nothing waiting the extra attempt simply finds nothing and clears the flag;
 * `readyEvents` (written by both threads) is updated with interlocked operations on the touched paths instead of
   plain read-modify-write.
 
