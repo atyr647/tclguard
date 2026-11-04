@@ -199,16 +199,30 @@ proc ::tg::http::process {id} {
                     return
                 }
                 scan $hex %x size
-                # Floods of tiny chunks cost us a buffer copy and three writes each (~75 us on a fast
-                # machine, ~120 us on a CI runner, whatever the chunk size), and chunks are not counted
-                # as requests; real clients send big ones. Below 128 bytes a request gets 1000 chunks,
-                # which bounds its CPU cost to ~120 ms even on slow hardware (with a limit of 16 bytes,
-                # 16-byte chunks cost 40x more CPU per byte than normal traffic, unmetered).
+                # Floods of tiny chunks cost us a buffer copy and a write each (~10 us with the fast path
+                # below, ~75-120 us before it), and chunks are not counted as requests; real clients send
+                # big ones. Below 128 bytes a request gets 1000 chunks, which bounds its CPU cost to a few
+                # tens of ms even on slow hardware (without a limit, 16-byte chunks would cost 40x more
+                # CPU per byte than normal traffic, unmetered).
                 if {$size < 128 && [incr nsmall($id)] > 1000} { reject $id 400 "too many tiny chunks" 1; return }
                 incr bodySeen($id) $size
                 if {$bodySeen($id) > [dict get $Lc maxBodyMB] * 1048576} {
                     reject $id 413 "request body too large" 0
                     return
+                }
+                # Fast path: the whole chunk (size line, data, closing CRLF) is already here and well
+                # formed, which is the normal case. It goes out in ONE write and one pass of this
+                # loop instead of three of each. Anything else (partial chunk, wrong terminator)
+                # takes the step-by-step states below, which also produce the rejections.
+                if {$size > 0} {
+                    set tot [expr {$idx + 4 + $size}]
+                    if {[string length $buf($id)] >= $tot && [string range $buf($id) [expr {$tot - 2}] [expr {$tot - 1}]] eq "\r\n"} {
+                        emit $id [string range $buf($id) 0 [expr {$tot - 1}]]
+                        if {![info exists buf($id)]} return
+                        set buf($id) [string range $buf($id) $tot end]
+                        set ::tg::tcp::dl($id) [expr {[::tg::now] + [dict get $Lc bodyTimeout] * 1000}]
+                        continue
+                    }
                 }
                 emit $id [string range $buf($id) 0 [expr {$idx + 1}]]
                 if {![info exists buf($id)]} return
