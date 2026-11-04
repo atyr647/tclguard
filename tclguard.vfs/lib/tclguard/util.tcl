@@ -177,12 +177,20 @@ namespace eval ::tg::ip {
 }
 
 # Parse an address. Returns {4 int} or {6 int} (128-bit), or {} when invalid.
+# parse and norm are called several times per request with the same few strings (the client address); remember the answers
+# (bounded: an attacker sending endless distinct strings only makes the table restart now and then).
+namespace eval ::tg::ip { variable pcache; array set pcache {}; variable ncache; array set ncache {}; variable cacheCount 0 }
 proc ::tg::ip::parse {s} {
+    variable pcache
+    variable cacheCount
+    if {[info exists pcache($s)]} { return $pcache($s) }
     # ASCII whitespace only: Tcl's default also strips U+00A0 and U+0085, so "\u00a0127.0.0.1" would parse as an address
-    set s [string trim $s " \t\r\n"]
-    if {[string first % $s] >= 0} { set s [lindex [split $s %] 0] }
-    if {[string first : $s] < 0} { return [parse4 $s] }
-    return [parse6 $s]
+    set t [string trim $s " \t\r\n"]
+    if {[string first % $t] >= 0} { set t [lindex [split $t %] 0] }
+    if {[string first : $t] < 0} { set r [parse4 $t] } else { set r [parse6 $t] }
+    if {$cacheCount > 20000} { array unset pcache; array unset ncache; set cacheCount 0 }
+    incr cacheCount
+    return [set pcache($s) $r]
 }
 
 proc ::tg::ip::parse4 {s} {
@@ -269,12 +277,13 @@ proc ::tg::ip::isValid {s} { expr {[parse $s] ne ""} }
 
 # Canonical text for an address (v4-mapped v6 collapses to v4). "" if invalid.
 proc ::tg::ip::norm {s} {
+    variable ncache
+    if {[info exists ncache($s)]} { return $ncache($s) }
     set p [parse $s]
-    if {$p eq ""} { return "" }
+    if {$p eq ""} { return [set ncache($s) ""] }
     lassign $p fam v
-    if {$fam == 4} { return [fmt4 $v] }
-    if {($v >> 32) == 0xffff} { return [fmt4 [expr {$v & 0xffffffff}]] }
-    return [fmt6 $v]
+    if {$fam == 4} { set r [fmt4 $v] } elseif {($v >> 32) == 0xffff} { set r [fmt4 [expr {$v & 0xffffffff}]] } else { set r [fmt6 $v] }
+    return [set ncache($s) $r]
 }
 
 # Limit/ban key: IPv4 exact, IPv6 aggregated to its /64 (attackers routinely own

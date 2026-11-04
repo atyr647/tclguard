@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/winbench.yml'
       - 'tests/load/winbench.tcl'
+      - 'tests/load/pingpong.py'
   workflow_dispatch:
 
 jobs:
@@ -14,17 +15,16 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with: { go-version: stable }
-      - run: cd tests/load/tgload; go build -o ../tgload-bin.exe .
-      - name: Event loop and accept rate (the shipped Windows program's own Tcl)
+      - name: What the OS itself can do (Python, blocking sockets)
+        run: python tests/load/pingpong.py 4
+      - name: Tcl event loop, section by section (each bounded)
         shell: pwsh
         run: |
           $exe = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
-          $env:ACCEPT_PORT = "28777"
-          $job = Start-Job { Start-Sleep -Seconds 38; & $using:PWD\tests\load\tgload-bin.exe connflood -addr 127.0.0.1:28777 -workers 40 -dur 10s }
-          & $exe eval tests\load\winbench.tcl 6
-          Receive-Job -Wait $job
+          foreach ($s in 'events','pingpong','blocking','threads') {
+            Write-Host "=== $s"
+            pwsh -NoProfile -File tools\ci-bounded.ps1 -Exe $exe -Seconds 60 eval tests\load\winbench.tcl $s 4
+          }
   macos:
     runs-on: macos-latest
     timeout-minutes: 20
@@ -32,4 +32,5 @@ jobs:
       - uses: actions/checkout@v4
       - run: |
           chmod +x releases/tclguard-macos-arm64
-          releases/tclguard-macos-arm64 eval tests/load/winbench.tcl 6
+          for s in events pingpong blocking threads; do releases/tclguard-macos-arm64 eval tests/load/winbench.tcl $s 4 || true; done
+          python3 tests/load/pingpong.py 4

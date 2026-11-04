@@ -674,6 +674,8 @@ proc ::tg::http::respondBody {id code reason ctype body extra {omitBody 0}} {
 #   * /.well-known/acme-challenge/<token> for a certificate order that is in progress
 #   * redirectHttps: send plain-HTTP visitors to the https:// address
 proc ::tg::http::special {id Lc d method target} {
+    # nearly every request is neither an ACME challenge nor to be redirected: leave before splitting anything
+    if {[string first acme-challenge $target] < 0 && (![dict exists $Lc redirectHttps] || ![::tg::bool [dict get $Lc redirectHttps]])} { return 0 }
     set path [lindex [split $target ?#] 0]
     if {[string match /.well-known/acme-challenge/* $path]} {
         set ka [::tg::acme::answer $path]
