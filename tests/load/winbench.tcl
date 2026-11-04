@@ -117,6 +117,18 @@ switch -- $section {
                 set ::to($c) [after 5000 [list drop $c]]
                 drop $c
             }
+        } elseif {$mode eq "timed"} {
+            # how much of the wall time is spent inside the accept script, and inside close() in particular?
+            set ::tAcc 0; set ::tClose 0; set ::tFirst 0
+            proc acc {c a p} {
+                set t0 [clock microseconds]
+                incr ::acc
+                set t1 [clock microseconds]
+                close $c
+                set t2 [clock microseconds]
+                incr ::tClose [expr {$t2 - $t1}]
+                incr ::tAcc [expr {$t2 - $t0}]
+            }
         } else {
             proc acc {c a p} { incr ::acc; close $c }
         }
@@ -126,6 +138,11 @@ switch -- $section {
         set t0 [clock milliseconds]
         vwait ::done
         puts [format "accept    (%s) %8.0f connections accepted and closed per second" $mode [expr {$::acc / (([clock milliseconds]-$t0)/1000.0)}]]
+        if {$mode eq "timed" && $::acc > 0} {
+            set wall [expr {([clock milliseconds]-$t0) * 1000.0}]
+            puts [format "accept    timed: %d accepts; per accept: %.0f us inside the script (%.0f us of it in close), %.0f us wall; the script is %.0f%% of the wall time" \
+                $::acc [expr {$::tAcc / double($::acc)}] [expr {$::tClose / double($::acc)}] [expr {$wall / $::acc}] [expr {100.0 * $::tAcc / $wall}]]
+        }
     }
     backlog {
         # does not service events: how many connections does the operating system queue for a listener nobody is accepting from?
