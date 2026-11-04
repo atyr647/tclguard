@@ -147,3 +147,14 @@ numbers, by contrast, are consistent: about 500-1,000 accepts per second in more
 cheap experiments are exhausted: each further idea needs a driver build (about 40 minutes with a measurement) and the evidence so far says the effect of such changes is not predictable from a model.
 The sensible choices are **D** (put something in front of a Windows guard that has to survive connection floods), or **B** (a native acceptor, the one design measured at thousands per second on
 these runners: Python's blocking `accept()` loop against the same flood, 2,955 to 13,382 per second), with the caveat that B has not been measured inside this process either.
+
+
+## Keeping it in Tcl: what was checked
+
+* **Threads do not help, and two of them hurt.** One listener in a Tcl worker thread: 718 accepts per second (the main thread: 677-742). Two listeners in two worker threads (127.0.0.1 and 127.0.0.2, same port, a flood
+  at each): **127 per second in total**, about 1,500 each over the run. Concurrent Tcl socket threads in one process interfere, which matches the earlier finding that two threads move fewer
+  round trips than one.
+* **A newer Tcl 8.6 is unlikely to help.** The release notes for 8.6.15, 8.6.16 and 8.6.17 list no change to the Windows socket driver (host names, path handling, menus, a file-system reference count); Tcl 9.0 and 8.7 were not tested.
+* **What the guard's "Lockdown" does today:** it accepts the connection and then rejects an unknown address (`tcpproxy.tcl`), which is too late for an accept queue that is already full. The kernel firewall is only used for bans.
+  A kernel-side version (the Windows Firewall rule for the port switched to "known visitors only" while accepting is saturated, using the addresses the guard already learns as well-behaved) would be done in Tcl with `netsh` and would
+  drop unknown addresses before they reach the listen queue. **It cannot be tested on GitHub's runners**: Windows does not filter loopback traffic (including traffic to the machine's own addresses), and the runners cannot be reached from another machine.
