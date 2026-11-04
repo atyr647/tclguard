@@ -1,6 +1,7 @@
 name: winsock-cost
 
-# The raw Winsock cost without Tcl (tests/load/winsock_cost.c): is WSAAsyncSelect itself what limits connection handling on Windows?
+# The raw Winsock accept cost without Tcl (tests/load/winsock_cost.c), under the same external flood (tgload connflood) as the Tcl and Python runs:
+# does a blocking accept() loop behave differently from one that uses WSAAsyncSelect(FD_ACCEPT) the way Tcl does?
 on:
   workflow_dispatch:
 
@@ -9,13 +10,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        run: ['accept 0', 'accept 1', 'accept 2', 'accept 3']
+        run: ['0', '1', '2']
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: ${{ matrix.run }}
+      - uses: actions/setup-go@v5
+        with: { go-version: stable }
+      - name: Build
+        run: |
+          cd tests/load/tgload; go build -o ../tgload-bin.exe .
+          cd ../../..; gcc -O2 -o winsock_cost.exe tests/load/winsock_cost.c -lws2_32
+      - name: accept mode ${{ matrix.run }}
         shell: pwsh
         run: |
-          gcc -O2 -o winsock_cost.exe tests/load/winsock_cost.c -lws2_32
-          ./winsock_cost.exe ${{ matrix.run }}
+          $gen = (Resolve-Path .\tests\load\tgload-bin.exe).Path
+          $p = Start-Process -FilePath .\winsock_cost.exe -ArgumentList @('accept','${{ matrix.run }}','ext') -RedirectStandardOutput out.txt -PassThru -NoNewWindow
+          Start-Sleep 3
+          & $gen connflood -addr "127.0.0.1:19090" -workers 150 -dur 20s -srcbase 127.0.3.0 -srcn 500 2>&1 | Select-Object -Last 2
+          $p | Wait-Process -Timeout 20 -ErrorAction SilentlyContinue
+          if (-not $p.HasExited) { $p | Stop-Process -Force }
+          Get-Content out.txt

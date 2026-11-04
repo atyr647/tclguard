@@ -67,25 +67,28 @@ int main(int argc, char **argv) {
         memset(&sa, 0, sizeof sa); sa.sin_family = AF_INET; sa.sin_port = htons((u_short) port); sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         bind(ls, (struct sockaddr *) &sa, sizeof sa); listen(ls, SOMAXCONN);
         if (mode >= 1) WSAAsyncSelect(ls, hwnd, NOTIFY_MSG, FD_ACCEPT);
-        for (i = 0; i < 96; i++) cl[i] = CreateThread(NULL, 0, client, NULL, 0, NULL);
-        t0 = now();
+        int ext = argc > 3 && strcmp(argv[3], "ext") == 0; double tw = 0, acc_us = 0; long wacc = 0, nacc = 0;
+        if (ext) secs = 28; else for (i = 0; i < 96; i++) cl[i] = CreateThread(NULL, 0, client, NULL, 0, NULL);
+        t0 = now(); tw = t0;
         while (now() - t0 < secs) {
+            if (ext && now() - tw >= 4.0) { printf("  window: %.0f accepts/s\n", (accepted - wacc) / (now() - tw)); fflush(stdout); wacc = accepted; tw = now(); }
             if (mode == 0) {
-                SOCKET c = accept(ls, NULL, NULL);
-                if (c != INVALID_SOCKET) { closesocket(c); accepted++; }
+                double ta = now(); SOCKET c = accept(ls, NULL, NULL);
+                if (c != INVALID_SOCKET) { acc_us += (now() - ta) * 1e6; nacc++; closesocket(c); accepted++; }
             } else {
                 if (WaitForSingleObject(hAcc, 200) != WAIT_OBJECT_0) continue;
                 wakes++;
                 for (;;) {
-                    SOCKET c = accept(ls, NULL, NULL);
+                    double ta = now(); SOCKET c = accept(ls, NULL, NULL);
                     if (c == INVALID_SOCKET) break;
+                    acc_us += (now() - ta) * 1e6; nacc++;
                     if (mode >= 3) { WSAAsyncSelect(c, hwnd, NOTIFY_MSG, FD_READ | FD_WRITE | FD_CLOSE); WSAAsyncSelect(c, hwnd, 0, 0); }
                     closesocket(c); accepted++;
                     if (mode == 1) break;
                 }
             }
         }
-        printf("accept mode %d: %.0f connections accepted and closed per second (%ld wake-ups)\n", mode, accepted / (now() - t0), wakes);
+        printf("accept mode %d: %.0f connections accepted and closed per second (%ld wake-ups); one accept() call takes %.0f us on average\n", mode, accepted / (now() - t0), wakes, nacc ? acc_us / nacc : 0.0);
         stop_clients = 1; (void) th; (void) cl; return 0;
     }
 }
