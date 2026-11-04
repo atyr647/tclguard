@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [patched-bare, patched-state, unpatched-bare, unpatched-state, python, backlog]
+        variant: [new-bare, new-state, prev-bare, prev-state, unpatched-bare, python]
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -25,9 +25,11 @@ jobs:
       - name: ${{ matrix.variant }}
         shell: pwsh
         run: |
-          git show dd2bcf5:releases/tclguard-windows-x86_64-console.exe > old.exe       # same program, runtime WITHOUT the socket patch
-          $new = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
+          git show dd2bcf5:releases/tclguard-windows-x86_64-console.exe > old.exe       # runtime WITHOUT the socket patch
+          git show 42edc10:releases/tclguard-windows-x86_64-console.exe > prev.exe      # the first shipped patch version (reads and writes only)
+          $new = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path   # whatever this commit ships
           $old = (Resolve-Path .\old.exe).Path
+          $prev = (Resolve-Path .\prev.exe).Path
           $gen = (Resolve-Path .\tests\load\tgload-bin.exe).Path
           $v = '${{ matrix.variant }}'
           $env:ACCEPT_PORT = "18080"
@@ -41,7 +43,7 @@ jobs:
           if ($v -eq 'python') {
             $p = Start-Process python -ArgumentList @('tests/load/accept_ref.py','18080','24') -RedirectStandardOutput acc.txt -PassThru -NoNewWindow
           } else {
-            $exe = if ($v.StartsWith('patched')) { $new } else { $old }
+            $exe = if ($v.StartsWith('new')) { $new } elseif ($v.StartsWith('prev')) { $prev } else { $old }
             $env:ACCEPT_MODE = $v.Split('-')[1]
             $p = Start-Process -FilePath $exe -ArgumentList @('eval','tests\load\winbench.tcl','accept','24') -RedirectStandardOutput acc.txt -PassThru -NoNewWindow
           }

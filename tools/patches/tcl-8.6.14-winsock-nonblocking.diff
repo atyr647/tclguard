@@ -1,6 +1,6 @@
 --- a/win/tclWinSock.c
 +++ b/win/tclWinSock.c
-@@ -307,6 +307,14 @@
+@@ -307,10 +307,42 @@
   * Simple wrapper round the SendMessage syscall.
   */
  
@@ -15,7 +15,35 @@
  #define SendSelectMessage(tsdPtr, message, payload)     \
      SendMessageW((tsdPtr)->hwnd, SOCKET_SELECT,          \
                  (WPARAM) (message), (LPARAM) (payload))
-@@ -768,6 +776,7 @@
+ 
++/*
++ * TclGuard patch: the same registration the socket thread performs for a SOCKET_SELECT message (see SocketProc), done by the
++ * calling thread itself. WSAAsyncSelect() may be called from any thread for a window owned by another one, so the synchronous
++ * SendMessage round trip to the socket thread (two thread switches, hundreds of microseconds on a busy or virtualised machine)
++ * is not needed where only the registration matters: creating and closing a channel, accepting and connecting. It is NOT used
++ * where the original relies on the socket thread having finished with the socket before a read or select() (the blocking paths).
++ */
++static void
++TgDirectSelect(
++    ThreadSpecificData *tsdPtr,
++    int message,
++    TcpState *statePtr)
++{
++    TcpFdList *fds;
++
++    for (fds = statePtr->sockets; fds != NULL; fds = fds->next) {
++	if (message == SELECT) {
++	    WSAAsyncSelect(fds->fd, tsdPtr->hwnd, SOCKET_MESSAGE, statePtr->selectEvents);
++	} else {
++	    WSAAsyncSelect(fds->fd, tsdPtr->hwnd, 0, 0);
++	}
++    }
++}
++
+ 
+ /*
+  * Address print debug functions
+@@ -768,6 +800,7 @@
      int bytesRead;
      DWORD error;
      ThreadSpecificData *tsdPtr = (ThreadSpecificData *)TclThreadDataKeyGet(&dataKey);
@@ -23,7 +51,7 @@
  
      *errorCodePtr = 0;
  
-@@ -810,7 +819,19 @@
+@@ -810,7 +843,19 @@
       */
  
      while (1) {
@@ -44,7 +72,7 @@
  
  	/*
  	 * Single fd operation: this proc is only called for a connected
-@@ -818,7 +839,9 @@
+@@ -818,7 +863,9 @@
  	 */
  
  	bytesRead = recv(statePtr->sockets->fd, buf, bufSize, 0);
@@ -55,7 +83,7 @@
  
  	/*
  	 * Check for end-of-file condition or successful read.
-@@ -878,7 +901,9 @@
+@@ -878,7 +925,9 @@
  	}
      }
  
@@ -66,7 +94,7 @@
  
      return bytesRead;
  }
-@@ -911,6 +936,7 @@
+@@ -911,6 +960,7 @@
      int written;
      DWORD error;
      ThreadSpecificData *tsdPtr = (ThreadSpecificData *)TclThreadDataKeyGet(&dataKey);
@@ -74,7 +102,7 @@
  
      *errorCodePtr = 0;
  
-@@ -936,7 +962,9 @@
+@@ -936,7 +986,9 @@
      }
  
      while (1) {
@@ -85,7 +113,7 @@
  
  	/*
  	 * Single fd operation: this proc is only called for a connected
-@@ -968,7 +996,19 @@
+@@ -968,7 +1020,19 @@
  
  	error = WSAGetLastError();
  	if (error == WSAEWOULDBLOCK) {
@@ -106,7 +134,7 @@
  	    if (GOT_BITS(statePtr->flags, TCP_NONBLOCKING)) {
  		*errorCodePtr = EWOULDBLOCK;
  		written = -1;
-@@ -992,7 +1032,9 @@
+@@ -992,7 +1056,9 @@
  	}
      }
  
@@ -117,7 +145,52 @@
  
      return written;
  }
-@@ -2822,6 +2864,30 @@
+@@ -1838,7 +1904,7 @@
+ 		 * Activate accept notification.
+ 		 */
+ 
+-		SendSelectMessage(tsdPtr, SELECT, statePtr);
++		TgDirectSelect(tsdPtr, SELECT, statePtr);
+ 	    }
+ 
+ 	    /*
+@@ -1934,7 +2000,7 @@
+ 	 * automatically places the socket into non-blocking mode.
+ 	 */
+ 
+-	SendSelectMessage(tsdPtr, SELECT, statePtr);
++	TgDirectSelect(tsdPtr, SELECT, statePtr);
+     } else {
+ 	/*
+ 	 * Connect failed
+@@ -2131,7 +2197,7 @@
+      */
+ 
+     statePtr->selectEvents = FD_READ | FD_CLOSE | FD_WRITE;
+-    SendSelectMessage(tsdPtr, SELECT, statePtr);
++    TgDirectSelect(tsdPtr, SELECT, statePtr);
+ 
+     snprintf(channelName, sizeof(channelName), SOCK_TEMPLATE, statePtr);
+     statePtr->channel = Tcl_CreateChannel(&tcpChannelType, channelName,
+@@ -2311,7 +2377,7 @@
+ 	 */
+ 
+ 	ioctlsocket(sock, (long) FIONBIO, &flag);
+-	SendSelectMessage(tsdPtr, SELECT, statePtr);
++	TgDirectSelect(tsdPtr, SELECT, statePtr);
+ 	if (Tcl_SetChannelOption(interp, statePtr->channel, "-eofchar", "")
+ 	    == TCL_ERROR) {
+ 	    Tcl_Close(NULL, statePtr->channel);
+@@ -2379,7 +2445,7 @@
+      */
+ 
+     newInfoPtr->selectEvents = (FD_READ | FD_WRITE | FD_CLOSE);
+-    SendSelectMessage(tsdPtr, SELECT, newInfoPtr);
++    TgDirectSelect(tsdPtr, SELECT, newInfoPtr);
+ 
+     snprintf(channelName, sizeof(channelName), SOCK_TEMPLATE, newInfoPtr);
+     newInfoPtr->channel = Tcl_CreateChannel(&tcpChannelType, channelName,
+@@ -2822,6 +2888,30 @@
  	     */
  
  	    TcpAccept(fds, newSocket, addr);
@@ -148,7 +221,7 @@
  	    return 1;
  	}
  
-@@ -2882,6 +2948,16 @@
+@@ -2882,6 +2972,16 @@
  	     * async select handler and keep waiting.
  	     */
  
@@ -165,7 +238,7 @@
  	    SendSelectMessage(tsdPtr, UNSELECT, statePtr);
  
  	    FD_ZERO(&readFds);
-@@ -2895,6 +2971,7 @@
+@@ -2895,6 +2995,7 @@
  		CLEAR_BITS(statePtr->readyEvents, FD_READ);
  		SendSelectMessage(tsdPtr, SELECT, statePtr);
  	    }
@@ -173,7 +246,7 @@
  	}
      }
  
-@@ -3263,7 +3340,7 @@
+@@ -3263,7 +3364,7 @@
  
  	    if (GOT_BITS(event, FD_CLOSE)) {
  		statePtr->acceptEventCount = 0;
@@ -182,7 +255,7 @@
  	    } else if (GOT_BITS(event, FD_ACCEPT)) {
  		statePtr->acceptEventCount++;
  	    }
-@@ -3283,7 +3360,7 @@
+@@ -3283,7 +3384,7 @@
  	     * Inform main thread about signaled events
  	     */
  
@@ -191,3 +264,12 @@
  
  	    /*
  	     * Wake up the Main Thread.
+@@ -3497,7 +3598,7 @@
+      * thread.
+      */
+ 
+-    SendSelectMessage(tsdPtr, notifyCmd, statePtr);
++    TgDirectSelect(tsdPtr, notifyCmd, statePtr);
+ }
+ 
+ /*
