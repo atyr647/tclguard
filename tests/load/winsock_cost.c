@@ -1,7 +1,7 @@
 /* What do the raw Winsock calls cost on this machine, without Tcl?  Cross-compile: x86_64-w64-mingw32-gcc -O2 -o winsock_cost.exe winsock_cost.c -lws2_32
  *
  *   winsock_cost.exe select       per-socket cost of WSAAsyncSelect (register, unregister) next to plain socket()/closesocket()
- *   winsock_cost.exe accept N     accepts per second for connections opened and dropped by 8 client threads, N =
+ *   winsock_cost.exe accept N     accepts per second for connections opened and dropped by 96 client threads, N =
  *      0  a blocking accept() loop (what Python does)
  *      1  Tcl's design: the listener is registered with WSAAsyncSelect(FD_ACCEPT) to a window owned by a message-pumping thread, which
  *         wakes the main thread, which accepts ONE connection and closes it, then waits again
@@ -63,11 +63,11 @@ int main(int argc, char **argv) {
         printf("... + WSAAsyncSelect + undo   %7.1f us\n", (t3 - t2) * 1e6 / n);
         return 0;
     } else {
-        SOCKET ls = socket(AF_INET, SOCK_STREAM, 0); struct sockaddr_in sa; HANDLE cl[8]; double t0; int secs = 10; long accepted = 0, wakes = 0;
+        SOCKET ls = socket(AF_INET, SOCK_STREAM, 0); struct sockaddr_in sa; HANDLE cl[96]; double t0; int secs = 10; long accepted = 0, wakes = 0;
         memset(&sa, 0, sizeof sa); sa.sin_family = AF_INET; sa.sin_port = htons((u_short) port); sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         bind(ls, (struct sockaddr *) &sa, sizeof sa); listen(ls, SOMAXCONN);
         if (mode >= 1) WSAAsyncSelect(ls, hwnd, NOTIFY_MSG, FD_ACCEPT);
-        for (i = 0; i < 8; i++) cl[i] = CreateThread(NULL, 0, client, NULL, 0, NULL);
+        for (i = 0; i < 96; i++) cl[i] = CreateThread(NULL, 0, client, NULL, 0, NULL);
         t0 = now();
         while (now() - t0 < secs) {
             if (mode == 0) {
