@@ -1,6 +1,6 @@
 --- a/win/tclWinSock.c
 +++ b/win/tclWinSock.c
-@@ -307,6 +307,14 @@
+@@ -307,6 +307,15 @@
   * Simple wrapper round the SendMessage syscall.
   */
  
@@ -9,13 +9,14 @@
 + * Plain |= / &= are read-modify-write and can lose each other's update, so the paths touched by
 + * the patch use interlocked operations.
 + */
++#define TG_ACCEPT_BATCH 16
 +#define TG_SET_READY(st, bits)   InterlockedOr((volatile LONG *) &(st)->readyEvents, (LONG) (bits))
 +#define TG_CLEAR_READY(st, bits) InterlockedAnd((volatile LONG *) &(st)->readyEvents, ~((LONG) (bits)))
 +
  #define SendSelectMessage(tsdPtr, message, payload)     \
      SendMessageW((tsdPtr)->hwnd, SOCKET_SELECT,          \
                  (WPARAM) (message), (LPARAM) (payload))
-@@ -768,6 +776,7 @@
+@@ -768,6 +777,7 @@
      int bytesRead;
      DWORD error;
      ThreadSpecificData *tsdPtr = (ThreadSpecificData *)TclThreadDataKeyGet(&dataKey);
@@ -23,7 +24,7 @@
  
      *errorCodePtr = 0;
  
-@@ -810,7 +819,19 @@
+@@ -810,7 +820,19 @@
       */
  
      while (1) {
@@ -44,7 +45,7 @@
  
  	/*
  	 * Single fd operation: this proc is only called for a connected
-@@ -818,7 +839,9 @@
+@@ -818,7 +840,9 @@
  	 */
  
  	bytesRead = recv(statePtr->sockets->fd, buf, bufSize, 0);
@@ -55,7 +56,7 @@
  
  	/*
  	 * Check for end-of-file condition or successful read.
-@@ -878,7 +901,9 @@
+@@ -878,7 +902,9 @@
  	}
      }
  
@@ -66,7 +67,7 @@
  
      return bytesRead;
  }
-@@ -911,6 +936,7 @@
+@@ -911,6 +937,7 @@
      int written;
      DWORD error;
      ThreadSpecificData *tsdPtr = (ThreadSpecificData *)TclThreadDataKeyGet(&dataKey);
@@ -74,7 +75,7 @@
  
      *errorCodePtr = 0;
  
-@@ -936,7 +962,9 @@
+@@ -936,7 +963,9 @@
      }
  
      while (1) {
@@ -85,7 +86,7 @@
  
  	/*
  	 * Single fd operation: this proc is only called for a connected
-@@ -968,7 +996,19 @@
+@@ -968,7 +997,19 @@
  
  	error = WSAGetLastError();
  	if (error == WSAEWOULDBLOCK) {
@@ -106,7 +107,7 @@
  	    if (GOT_BITS(statePtr->flags, TCP_NONBLOCKING)) {
  		*errorCodePtr = EWOULDBLOCK;
  		written = -1;
-@@ -992,7 +1032,9 @@
+@@ -992,7 +1033,9 @@
  	}
      }
  
@@ -117,38 +118,138 @@
  
      return written;
  }
-@@ -2822,6 +2864,30 @@
+@@ -2774,68 +2817,79 @@
+      */
+ 
+     if (GOT_BITS(statePtr->readyEvents, FD_ACCEPT)) {
+-	for (fds = statePtr->sockets; fds != NULL; fds = fds->next) {
+-	    /*
+-	     * Accept the incoming connection request.
+-	     */
+-
+-	    len = sizeof(address);
+-	    newSocket = accept(fds->fd, &(addr.sa), &len);
++	/*
++	 * TclGuard patch: take every connection that is already waiting (up to TG_ACCEPT_BATCH) out of the kernel's queue in one tight
++	 * loop, and only then do the per-connection work of TcpAccept(). The original accepts ONE connection per notification; with
++	 * WSAAsyncSelect(FD_ACCEPT) that is what made the accept rate collapse under load (measured on a Windows Server 2025 runner
++	 * with the same flood generator: 2,700 accepts/s falling to 30-70/s, against about 7,500/s sustained when the pending
++	 * connections are drained in a loop, and about 12,000/s for a plain blocking accept(); see docs/WINDOWS-ACCEPT.md).
++	 * The lock is held throughout, as in the original, so the socket thread cannot add to acceptEventCount meanwhile.
++	 */
++	SOCKET batch[TG_ACCEPT_BATCH];
++	address baddr[TG_ACCEPT_BATCH];
++	TcpFdList *bfds[TG_ACCEPT_BATCH];
++	int nb = 0, i;
++
++	for (fds = statePtr->sockets; fds != NULL && nb < TG_ACCEPT_BATCH; fds = fds->next) {
++	    while (nb < TG_ACCEPT_BATCH) {
++		len = sizeof(baddr[nb]);
++		newSocket = accept(fds->fd, &(baddr[nb].sa), &len);
+ 
+-	    /*
+-	     * On Tcl server sockets with multiple OS fds we loop over the fds
+-	     * trying an accept() on each, so we expect INVALID_SOCKET.  There
+-	     * are also other network stack conditions that can result in
+-	     * FD_ACCEPT but a subsequent failure on accept() by the time we
+-	     * get around to it.
+-	     *
+-	     * Access to sockets (acceptEventCount, readyEvents) in socketList
+-	     * is still protected by the lock (prevents reintroduction of
+-	     * SF Tcl Bug 3056775.
+-	     */
++		/*
++		 * On Tcl server sockets with multiple OS fds we loop over the fds trying an accept() on each, so we expect
++		 * INVALID_SOCKET (nothing waiting); other network stack conditions can also result in FD_ACCEPT but a failing accept().
++		 */
+ 
+-	    if (newSocket == INVALID_SOCKET) {
+-		/* int err = WSAGetLastError(); */
+-		continue;
++		if (newSocket == INVALID_SOCKET) {
++		    break;
++		}
++		batch[nb] = newSocket;
++		bfds[nb] = fds;
++		nb++;
+ 	    }
++	}
+ 
+-	    /*
+-	     * It is possible that more than one FD_ACCEPT has been sent, so
+-	     * an extra count must be kept. Decrement the count, and reset the
+-	     * readyEvent bit if the count is no longer > 0.
+-	     */
+-
+-	    statePtr->acceptEventCount--;
++	if (nb < TG_ACCEPT_BATCH) {
++	    /* Everything that was waiting has been taken (accept() said "would block"): wait for the next notification. */
++	    statePtr->acceptEventCount = 0;
++	    TG_CLEAR_READY(statePtr, FD_ACCEPT);
++	} else {
++	    /* The batch is full, more may be waiting: stay "ready" so that the next pass of the event loop comes back. */
++	    statePtr->acceptEventCount = 1;
++	}
+ 
+-	    if (statePtr->acceptEventCount <= 0) {
+-		CLEAR_BITS(statePtr->readyEvents, FD_ACCEPT);
+-	    }
++	SetEvent(tsdPtr->socketListLock);
+ 
+-	    SetEvent(tsdPtr->socketListLock);
++	for (i = 0; i < nb; i++) {
++	    int alive = 0;
++	    TcpState *p;
++	    TcpFdList *f;
+ 
+ 	    /*
+-	     * Caution: TcpAccept() has the side-effect of evaluating the
+-	     * server accept script (via AcceptCallbackProc() in tclIOCmd.c),
+-	     * which can close the server socket and invalidate statePtr and
+-	     * fds. If TcpAccept() accepts a socket we must return immediately
+-	     * and let SocketCheckProc queue additional FD_ACCEPT events.
++	     * Caution: TcpAccept() evaluates the server accept script (via AcceptCallbackProc() in tclIOCmd.c), which can close the
++	     * server socket and invalidate statePtr and fds. So before each connection look the listener up again; if it is gone,
++	     * the rest of the batch is closed (the original would have left them in the kernel queue, which is closed with the listener).
  	     */
  
- 	    TcpAccept(fds, newSocket, addr);
-+
-+	    /*
-+	     * TclGuard patch: accepting is otherwise one connection per round trip through the socket
-+	     * thread (WinSock only posts the next FD_ACCEPT after this accept() has been noticed there),
-+	     * which caps a server at a few hundred connections a second and makes the OS refuse the rest
-+	     * once its queue is full. Mark the listener as having another request pending so the next
-+	     * pass of the event loop tries accept() again straight away; if nothing is waiting it simply
-+	     * finds nothing and clears the flag again (see below). The accept script may have closed the
-+	     * listener, so look it up again instead of trusting statePtr.
-+	     */
+-	    TcpAccept(fds, newSocket, addr);
+-	    return 1;
+-	}
+-
+-	/*
+-	 * Loop terminated with no sockets accepted; clear the ready mask so
+-	 * we can detect the next connection request. Note that connection
+-	 * requests are level triggered, so if there is a request already
+-	 * pending, a new event will be generated.
+-	 */
+-
+-	statePtr->acceptEventCount = 0;
+-	CLEAR_BITS(statePtr->readyEvents, FD_ACCEPT);
 +	    WaitForSingleObject(tsdPtr->socketListLock, INFINITE);
-+	    {
-+		TcpState *again;
-+
-+		for (again = tsdPtr->socketList; again != NULL; again = again->nextPtr) {
-+		    if (again == statePtr && again->acceptProc != NULL
-+			    && again->sockets != NULL && again->sockets->fd == eventPtr->socket) {
-+			again->acceptEventCount++;
-+			TG_SET_READY(again, FD_ACCEPT);
-+			break;
++	    for (p = tsdPtr->socketList; p != NULL && !alive; p = p->nextPtr) {
++		if (p == statePtr) {
++		    for (f = p->sockets; f != NULL; f = f->next) {
++			if (f == bfds[i]) {
++			    alive = 1;
++			    break;
++			}
 +		    }
 +		}
 +	    }
 +	    SetEvent(tsdPtr->socketListLock);
- 	    return 1;
- 	}
  
-@@ -2882,6 +2948,16 @@
+-	SetEvent(tsdPtr->socketListLock);
++	    if (!alive) {
++		closesocket(batch[i]);
++		continue;
++	    }
++	    TcpAccept(bfds[i], batch[i], baddr[i]);
++	}
+ 	return 1;
+     }
+ 
+@@ -2882,6 +2936,16 @@
  	     * async select handler and keep waiting.
  	     */
  
@@ -165,7 +266,7 @@
  	    SendSelectMessage(tsdPtr, UNSELECT, statePtr);
  
  	    FD_ZERO(&readFds);
-@@ -2895,6 +2971,7 @@
+@@ -2895,6 +2959,7 @@
  		CLEAR_BITS(statePtr->readyEvents, FD_READ);
  		SendSelectMessage(tsdPtr, SELECT, statePtr);
  	    }
@@ -173,7 +274,7 @@
  	}
      }
  
-@@ -3263,7 +3340,7 @@
+@@ -3263,7 +3328,7 @@
  
  	    if (GOT_BITS(event, FD_CLOSE)) {
  		statePtr->acceptEventCount = 0;
@@ -182,7 +283,7 @@
  	    } else if (GOT_BITS(event, FD_ACCEPT)) {
  		statePtr->acceptEventCount++;
  	    }
-@@ -3283,7 +3360,7 @@
+@@ -3283,7 +3348,7 @@
  	     * Inform main thread about signaled events
  	     */
  
