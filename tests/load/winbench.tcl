@@ -1,7 +1,8 @@
 # Where does Tcl's event loop spend its time on this platform?  Run with the project's own Tcl:
 #   <program> eval tests/load/winbench.tcl <section> [seconds]        (tclsh8.6 tests/load/winbench.tcl works too)
 # sections:
-#   events     pure timer/idle events (no sockets): how fast can the notifier turn?
+#   timers     pure 'after 0' timer events (no sockets): how fast can the event loop turn?
+#   idle       the same with a self-requeuing 'after idle' callback
 #   pingpong   N loopback client/server pairs in ONE interpreter bouncing a line (fileevent-driven)
 #   blocking   one client and one server in two THREADS using blocking I/O only (no fileevent, no notifier)
 #   threads    the fileevent ping-pong, each group of pairs in its own thread
@@ -37,19 +38,23 @@ set pairScript {
 eval $pairScript
 
 switch -- $section {
-    events {
-        set ::k 0
-        proc tick {} { incr ::k; after idle tick }
-        after idle tick
-        after [expr {$secs * 1000}] {set ::stop 1}
-        vwait ::stop
-        puts [format "events    %9.0f after-idle events/s" [expr {$::k / double($secs)}]]
+    timers {
         set ::k 0; set ::stop 0
         proc tick2 {} { incr ::k; after 0 tick2 }
         after 0 tick2
         after [expr {$secs * 1000}] {set ::stop 1}
         vwait ::stop
-        puts [format "events    %9.0f after-0 timer events/s" [expr {$::k / double($secs)}]]
+        puts [format "timers    %9.0f after-0 timer events/s" [expr {$::k / double($secs)}]]
+    }
+    idle {
+        # a callback that re-queues itself with 'after idle': on Windows this starved every timer (even the watchdog) with the
+        # stock Tcl 8.6.14 runtime; it is its own section so that it cannot hide the others
+        set ::k 0; set ::stop 0
+        proc tick {} { incr ::k; after idle tick }
+        after idle tick
+        after [expr {$secs * 1000}] {set ::stop 1}
+        vwait ::stop
+        puts [format "idle      %9.0f after-idle events/s" [expr {$::k / double($secs)}]]
     }
     pingpong {
         foreach pairs {1 16} { puts [format "pingpong  1 interpreter, %2d pairs : %8.0f round trips/s" $pairs [run $pairs $secs]] }

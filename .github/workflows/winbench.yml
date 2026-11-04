@@ -21,7 +21,7 @@ jobs:
         shell: pwsh
         run: |
           $exe = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
-          foreach ($s in 'events','pingpong','blocking','threads') {
+          foreach ($s in 'timers','idle','pingpong','blocking','threads') {
             Write-Host "=== $s"
             pwsh -NoProfile -File tools\ci-bounded.ps1 -Exe $exe -Seconds 60 eval tests\load\winbench.tcl $s 4
           }
@@ -32,5 +32,5 @@ jobs:
       - uses: actions/checkout@v4
       - run: |
           chmod +x releases/tclguard-macos-arm64
-          for s in events pingpong blocking threads; do releases/tclguard-macos-arm64 eval tests/load/winbench.tcl $s 4 || true; done
+          for s in timers idle pingpong blocking threads; do releases/tclguard-macos-arm64 eval tests/load/winbench.tcl $s 4 || true; done
           python3 tests/load/pingpong.py 4
