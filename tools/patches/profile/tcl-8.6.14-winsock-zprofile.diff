@@ -1,0 +1,179 @@
+--- a/win/tclWinSock.c
++++ b/win/tclWinSock.c
+@@ -315,9 +315,30 @@
+ #define TG_SET_READY(st, bits)   InterlockedOr((volatile LONG *) &(st)->readyEvents, (LONG) (bits))
+ #define TG_CLEAR_READY(st, bits) InterlockedAnd((volatile LONG *) &(st)->readyEvents, ~((LONG) (bits)))
+ 
++/* ---- TclGuard PROFILING build only: where does the time of an accepted connection go? Printed at exit when TG_SOCKPROF is set. ---- */
++#include <stdio.h>
++enum { P_EV_ACCEPT, P_ACCEPT_CALL, P_ACCEPT_EMPTY, P_TCPACCEPT, P_GNI, P_CREATE, P_SETOPT, P_CB, P_CLOSE, P_CLOSESOCK,
++       P_THR_INS, P_THR_REM, P_SYNC, P_GAP, P_SOCKPROC, P_N };
++static const char *pname[P_N] = { "accept branch of SocketEventProc (to after TcpAccept)", "accept() call", "accept() found nothing",
++    "TcpAccept (whole)", "getnameinfo", "Tcl_CreateChannel (incl. thread-insert)", "two Tcl_SetChannelOption", "accept callback (the script)",
++    "TcpCloseProc (whole)", "closesocket", "thread action INSERT", "thread action REMOVE", "synchronous select/unselect messages",
++    "time between two accept events (all of it)", "SocketProc (socket thread, per message)" };
++static volatile LONGLONG pv[P_N]; static volatile LONG pn[P_N]; static LONGLONG plast;
++static LONGLONG pnow(void) { LARGE_INTEGER c; QueryPerformanceCounter(&c); return c.QuadPart; }
++#define PSTART LONGLONG pt0 = pnow()
++#define PEND(i) do { InterlockedExchangeAdd64(&pv[i], pnow() - pt0); InterlockedIncrement(&pn[i]); } while (0)
++static void PDump(void) {
++    LARGE_INTEGER f; int i; QueryPerformanceFrequency(&f);
++    fprintf(stderr, "---- socket driver probes (QueryPerformanceFrequency %lld)\n", (long long) f.QuadPart);
++    for (i = 0; i < P_N; i++) {
++	fprintf(stderr, "%-58s %9ld calls %10.1f ms total %9.1f us each\n", pname[i], (long) pn[i], pv[i] * 1000.0 / f.QuadPart,
++		pn[i] ? pv[i] * 1e6 / f.QuadPart / pn[i] : 0.0);
++    }
++    fflush(stderr);
++}
++static LRESULT TgSendSelect(HWND h, WPARAM m, LPARAM p) { PSTART; LRESULT r = SendMessageW(h, SOCKET_SELECT, m, p); PEND(P_SYNC); return r; }
+ #define SendSelectMessage(tsdPtr, message, payload)     \
+-    SendMessageW((tsdPtr)->hwnd, SOCKET_SELECT,          \
+-                (WPARAM) (message), (LPARAM) (payload))
++    TgSendSelect((tsdPtr)->hwnd, (WPARAM) (message), (LPARAM) (payload))
+ 
+ 
+ /*
+@@ -1066,6 +1087,7 @@
+     /* TIP #218 */
+     int errorCode = 0;
+     ThreadSpecificData *tsdPtr = TCL_TSD_INIT(&dataKey);
++    PSTART;
+ 
+     /*
+      * Check that WinSock is initialized; do not call it if not, to prevent
+@@ -1084,10 +1106,10 @@
+ 	    TcpFdList *thisfd = statePtr->sockets;
+ 
+ 	    statePtr->sockets = thisfd->next;
+-	    if (closesocket(thisfd->fd) == SOCKET_ERROR) {
++	    { PSTART; if (closesocket(thisfd->fd) == SOCKET_ERROR) {
+ 		TclWinConvertError((DWORD) WSAGetLastError());
+ 		errorCode = Tcl_GetErrno();
+-	    }
++	    } PEND(P_CLOSESOCK); }
+ 	    ckfree(thisfd);
+ 	}
+     }
+@@ -1131,6 +1153,7 @@
+      */
+ 
+     ckfree(statePtr);
++    PEND(P_CLOSE);
+     return errorCode;
+ }
+ 
+@@ -2424,8 +2447,11 @@
+     SendSelectMessage(tsdPtr, SELECT, newInfoPtr);
+ 
+     snprintf(channelName, sizeof(channelName), SOCK_TEMPLATE, newInfoPtr);
++    { PSTART;
+     newInfoPtr->channel = Tcl_CreateChannel(&tcpChannelType, channelName,
+ 	    newInfoPtr, (TCL_READABLE | TCL_WRITABLE));
++    PEND(P_CREATE); }
++    { PSTART;
+     if (Tcl_SetChannelOption(NULL, newInfoPtr->channel, "-translation",
+ 	    "auto crlf") == TCL_ERROR) {
+ 	Tcl_Close(NULL, newInfoPtr->channel);
+@@ -2436,16 +2462,21 @@
+ 	Tcl_Close(NULL, newInfoPtr->channel);
+ 	return;
+     }
++    PEND(P_SETOPT); }
+ 
+     /*
+      * Invoke the accept callback function.
+      */
+ 
+     if (statePtr->acceptProc != NULL) {
++	{ PSTART;
+ 	getnameinfo(&(addr.sa), len, host, sizeof(host), port, sizeof(port),
+                     NI_NUMERICHOST|NI_NUMERICSERV);
++	PEND(P_GNI); }
++	{ PSTART;
+ 	statePtr->acceptProc(statePtr->acceptProcData, newInfoPtr->channel,
+ 			    host, atoi(port));
++	PEND(P_CB); }
+     }
+ }
+ 
+@@ -2612,6 +2643,7 @@
+     void *clientData)		/* Not used. */
+ {
+     Tcl_MutexLock(&socketMutex);
++    if (getenv("TG_SOCKPROF")) PDump();
+ 
+     /*
+      * Make sure the socket event handling window is cleaned-up for, at
+@@ -2816,13 +2848,16 @@
+      */
+ 
+     if (GOT_BITS(statePtr->readyEvents, FD_ACCEPT)) {
++	LONGLONG pev0 = pnow();
++	if (plast) { InterlockedExchangeAdd64(&pv[P_GAP], pev0 - plast); InterlockedIncrement(&pn[P_GAP]); }
++	plast = pev0;
+ 	for (fds = statePtr->sockets; fds != NULL; fds = fds->next) {
+ 	    /*
+ 	     * Accept the incoming connection request.
+ 	     */
+ 
+ 	    len = sizeof(address);
+-	    newSocket = accept(fds->fd, &(addr.sa), &len);
++	    { PSTART; newSocket = accept(fds->fd, &(addr.sa), &len); if (newSocket == INVALID_SOCKET) { PEND(P_ACCEPT_EMPTY); } else { PEND(P_ACCEPT_CALL); } }
+ 
+ 	    /*
+ 	     * On Tcl server sockets with multiple OS fds we loop over the fds
+@@ -2863,7 +2898,8 @@
+ 	     * and let SocketCheckProc queue additional FD_ACCEPT events.
+ 	     */
+ 
+-	    TcpAccept(fds, newSocket, addr);
++	    { PSTART; TcpAccept(fds, newSocket, addr); PEND(P_TCPACCEPT); }
++	    InterlockedExchangeAdd64(&pv[P_EV_ACCEPT], pnow() - pev0); InterlockedIncrement(&pn[P_EV_ACCEPT]);
+ 
+ 	    /*
+ 	     * TclGuard patch: accepting is otherwise one connection per round trip through the socket
+@@ -3256,6 +3292,7 @@
+  *----------------------------------------------------------------------
+  */
+ 
++static LRESULT CALLBACK SocketProcInner(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+ static LRESULT CALLBACK
+ SocketProc(
+     HWND hwnd,
+@@ -3263,6 +3300,19 @@
+     WPARAM wParam,
+     LPARAM lParam)
+ {
++    PSTART;
++    LRESULT r = SocketProcInner(hwnd, message, wParam, lParam);
++    if (message == SOCKET_MESSAGE) { PEND(P_SOCKPROC); }
++    return r;
++}
++
++static LRESULT CALLBACK
++SocketProcInner(
++    HWND hwnd,
++    UINT message,
++    WPARAM wParam,
++    LPARAM lParam)
++{
+     int event, error;
+     SOCKET socket;
+     TcpState *statePtr;
+@@ -3510,6 +3560,8 @@
+     ThreadSpecificData *tsdPtr;
+     TcpState *statePtr = (TcpState *)instanceData;
+     int notifyCmd;
++    PSTART;
++    int pact = action == TCL_CHANNEL_THREAD_INSERT;
+ 
+     if (action == TCL_CHANNEL_THREAD_INSERT) {
+ 	/*
+@@ -3575,6 +3627,7 @@
+      */
+ 
+     SendSelectMessage(tsdPtr, notifyCmd, statePtr);
++    if (pact) { PEND(P_THR_INS); } else { PEND(P_THR_REM); }
+ }
+ 
+ /*
