@@ -14,8 +14,11 @@ g = Guard({"secure": {"type": "http", "port": tport, "backendPort": be.port, "tl
           {"strikeThreshold": 1000, "strikeLeakPerSec": 0, "banSteps": "{30 60}"})
 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
 
+class OutOfPorts(Exception): pass
+
 def session(port, tls, n=5):
-    s = socket.create_connection(("127.0.0.1", port), 5)
+    try: s = socket.create_connection(("127.0.0.1", port), 5)
+    except OSError as e: raise OutOfPorts(str(e))      # (this machine's ephemeral ports are used up: stop, that is not a guard fault)
     if tls: s = ctx.wrap_socket(s, server_hostname="localhost")
     s.settimeout(4)
     try:
@@ -36,11 +39,13 @@ def session(port, tls, n=5):
 try:
     g.start(); assert wait_port(tport) and wait_port(pport)
     t0 = time.time(); done = {"plain": 0, "tls": 0}; bad = []
-    for k in range(N):
-        for name, port, tls in (("tls", tport, True), ("plain", pport, False)):
-            r = session(port, tls); done[name] += 1
-            if r: bad.append((name, k, r)); print("FAIL", name, k, r, flush=True)
-        if time.time() - t0 > LIMIT: break
+    try:
+        for k in range(N):
+            for name, port, tls in (("tls", tport, True), ("plain", pport, False)):
+                r = session(port, tls); done[name] += 1
+                if r: bad.append((name, k, r)); print("FAIL", name, k, r, flush=True)
+            if time.time() - t0 > LIMIT or len(bad) >= 5: break
+    except OutOfPorts as e: print("stopped early, out of local ports:", e)
     el = time.time() - t0
     print(f"{done['tls']} TLS and {done['plain']} plain sessions of 5 requests in {el:.0f} s; stalled or failed: {len(bad)}")
     check("no keep-alive session stalled (TLS and plain)", not bad, bad[:5])

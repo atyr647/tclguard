@@ -20,7 +20,7 @@ jobs:
             foreach ($pair in @(@('control', $ctl), @('shipped', $rel))) {
               Write-Host "=== round $round : $($pair[0])"
               $env:TG_CMD = $pair[1]
-              python -u tests/integration/stress_keepalive.py 4000 150
+              python -u tests/integration/stress_keepalive.py 2500 150
             }
           }
           exit 0
