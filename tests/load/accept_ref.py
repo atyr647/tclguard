@@ -2,6 +2,8 @@
 """What the operating system itself can do: a blocking accept-and-close loop in one thread (no Tcl). Usage: accept_ref.py port seconds
 Also: accept_ref.py backlog port  -> connect to a listener nobody accepts from and count how many connections the OS queues."""
 import socket, sys, time, threading
+if sys.argv[1] == "listen":            # a listener nobody accepts from (for the backlog test), for N seconds
+    ls = socket.socket(); ls.bind(("127.0.0.1", int(sys.argv[2]))); ls.listen(socket.SOMAXCONN); time.sleep(float(sys.argv[3])); sys.exit(0)
 if sys.argv[1] == "backlog":
     port = int(sys.argv[2]); ok = 0; t0 = time.time()
     while time.time() - t0 < 25:
