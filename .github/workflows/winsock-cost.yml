@@ -9,7 +9,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        run: ['select', 'accept 0', 'accept 1']
+        run: ['accept 0', 'accept 1', 'accept 2', 'accept 3']
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
