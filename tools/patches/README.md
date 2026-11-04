@@ -14,8 +14,9 @@ way), and connections are refused by the OS when the listen backlog fills while 
 * `TcpInputProc` clears `FD_READ` *before* `recv()` instead of after (WinSock re-arms the notification inside `recv()`;
   a notification for data that arrives afterwards sets the flag again, one raised for data we are about to read only
   costs one harmless extra poll);
-* the readable check polls with `select()`, and when it finds nothing clears the flag and polls once more, so data that
-  arrives in between is never forgotten;
+* the "is it really readable?" check no longer unselects, calls `select()` and re-selects: a flag left over from a
+  notification for data that was read in the meantime now costs one harmless extra readable event (its read finds
+  nothing and clears the flag), and nothing calls `select()` on a socket that WSAAsyncSelect is still watching;
 * `TcpOutputProc` keeps the original synchronous ordering in the one place it matters — when `send()` returns
   `WSAEWOULDBLOCK` (buffer full) — and skips the messages otherwise;
 * after accepting a connection the listener is marked as having another request pending, so the next pass of the event

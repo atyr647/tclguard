@@ -148,39 +148,24 @@
  	    return 1;
  	}
  
-@@ -2882,6 +2948,31 @@
+@@ -2882,6 +2948,16 @@
  	     * async select handler and keep waiting.
  	     */
  
 +	    if (GOT_BITS(statePtr->flags, TCP_NONBLOCKING)) {
 +		/*
-+		 * TclGuard patch: no synchronous messages to the socket thread. Poll with select();
-+		 * if nothing is there, clear the flag and poll once more, so data that arrived
-+		 * between the first poll and the clear is not forgotten (data arriving after the
-+		 * clear makes WinSock post a fresh FD_READ).
++		 * TclGuard patch: no synchronous messages to the socket thread and no select() on a socket
++		 * that WSAAsyncSelect is still watching (the original unselects first, "so select will work
++		 * correctly"). The flag is cleared by TcpInputProc *before* it reads, so a flag left over
++		 * from a notification for data that was read in the meantime costs exactly one harmless
++		 * extra "readable" event whose read finds nothing (EWOULDBLOCK), after which it is gone.
 +		 */
-+		FD_ZERO(&readFds);
-+		FD_SET(statePtr->sockets->fd, &readFds);
-+		timeout.tv_usec = 0;
-+		timeout.tv_sec = 0;
-+		if (select(0, &readFds, NULL, NULL, &timeout) != 0) {
-+		    SET_BITS(mask, TCL_READABLE);
-+		} else {
-+		    TG_CLEAR_READY(statePtr, FD_READ);
-+		    FD_ZERO(&readFds);
-+		    FD_SET(statePtr->sockets->fd, &readFds);
-+		    timeout.tv_usec = 0;
-+		    timeout.tv_sec = 0;
-+		    if (select(0, &readFds, NULL, NULL, &timeout) != 0) {
-+			TG_SET_READY(statePtr, FD_READ);
-+			SET_BITS(mask, TCL_READABLE);
-+		    }
-+		}
++		SET_BITS(mask, TCL_READABLE);
 +	    } else {
  	    SendSelectMessage(tsdPtr, UNSELECT, statePtr);
  
  	    FD_ZERO(&readFds);
-@@ -2895,6 +2986,7 @@
+@@ -2895,6 +2971,7 @@
  		CLEAR_BITS(statePtr->readyEvents, FD_READ);
  		SendSelectMessage(tsdPtr, SELECT, statePtr);
  	    }
@@ -188,7 +173,7 @@
  	}
      }
  
-@@ -3263,7 +3355,7 @@
+@@ -3263,7 +3340,7 @@
  
  	    if (GOT_BITS(event, FD_CLOSE)) {
  		statePtr->acceptEventCount = 0;
@@ -197,7 +182,7 @@
  	    } else if (GOT_BITS(event, FD_ACCEPT)) {
  		statePtr->acceptEventCount++;
  	    }
-@@ -3283,7 +3375,7 @@
+@@ -3283,7 +3360,7 @@
  	     * Inform main thread about signaled events
  	     */
  

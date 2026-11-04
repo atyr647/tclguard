@@ -1,0 +1,26 @@
+name: stress-win
+
+# Repeats the keep-alive pattern that stalled once on Windows in CI, against the shipped program and against a control
+# built from the same source on the unpatched Tcl runtime, and counts stalls.
+on:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Keep-alive stress, control (unpatched runtime) then shipped program
+        shell: pwsh
+        run: |
+          $ctl = (Resolve-Path .\tests\load\control\tclguard-windows-control-console.exe).Path
+          $rel = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
+          foreach ($round in 1,2) {
+            foreach ($pair in @(@('control', $ctl), @('shipped', $rel))) {
+              Write-Host "=== round $round : $($pair[0])"
+              $env:TG_CMD = $pair[1]
+              python -u tests/integration/stress_keepalive.py 4000 150
+            }
+          }
+          exit 0
