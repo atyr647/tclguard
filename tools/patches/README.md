@@ -23,6 +23,10 @@ way), and connections are refused by the OS when the listen backlog fills while 
   original accepts one connection per `FD_ACCEPT` notification; measured on a Windows runner with one flood generator, that design's accept rate collapsed from
   about 2,700 per second to 30-70, while the same notification design draining in a loop held about 7,500 and a plain blocking `accept()` about 12,000
   (`tests/load/winsock_cost.c`, `docs/WINDOWS-ACCEPT.md`). If the accept script closes the listener, the rest of the batch is closed;
+* **sockets are registered with `WSAAsyncSelect` by the calling thread itself** when a channel is created, closed, accepted or connected, instead of by a synchronous
+  message to the helper thread (about 100 microseconds each, three per connection). This and the batched accept above are only effective **together**: in a raw C accept loop
+  under the same flood, batching without the direct registration managed 537 accepts per second and fell to 0, direct registration without batching 28-69, both together 9,275
+  (`tests/load/winsock_cost.c`, modes 1-4). The blocking-socket paths still use the original synchronous messages;
 * `readyEvents` (written by both threads) is updated with interlocked operations on the touched paths instead of
   plain read-modify-write.
 
