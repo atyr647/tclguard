@@ -1,6 +1,6 @@
 # Windows connection floods: what limits the guard, and the options for fixing it properly
 
-Status: measured, nothing below the "Measured" heading has been implemented yet. Numbers are from GitHub's Windows Server 2025 runner (`acceptbench.yml`,
+Status: option A below was **tried and did not help**; the rest has not been implemented. Numbers are from GitHub's Windows Server 2025 runner (`acceptbench.yml`,
 one fresh runner per variant, 150 attacker workers from 500 source addresses for 20 s, loopback). They are the ceiling of *one* Tcl thread.
 
 ## Measured
@@ -30,7 +30,7 @@ one fresh runner per variant, 150 attacker workers from 500 source addresses for
 
 | # | Option | Expected effect | Cost and risk | Keeps "pure Tcl"? |
 |---|---|---|---|---|
-| A | **Remove the remaining hand-offs in Tcl's driver**: register a new socket with `WSAAsyncSelect` directly instead of through a synchronous message, same for the unregister on close, and accept a bounded batch per event instead of one | maybe 1.5-3x on accepts (**a guess**; the same change gave 4-12x on reads and writes, only 1.3x on accepts so far) | small C patch to the file already patched; testable with `acceptbench.yml`, `stress-win.yml` and the flood test; the first patch had a real bug, so the same discipline applies | yes (a patched runtime) |
+| A | **(tried, no effect, reverted)** Remove the remaining hand-offs in Tcl's driver: register a new socket with `WSAAsyncSelect` directly instead of through a synchronous message, same for the unregister on close, and accept a bounded batch per event instead of one | maybe 1.5-3x on accepts (**a guess**; the same change gave 4-12x on reads and writes, only 1.3x on accepts so far) | small C patch to the file already patched; testable with `acceptbench.yml`, `stress-win.yml` and the flood test; the first patch had a real bug, so the same discipline applies | yes (a patched runtime) |
 | B | **A small native acceptor** (a C extension linked into the Windows runtime): one OS thread does blocking `accept()` on a large queue, drops banned or over-rate addresses natively, and hands the rest to Tcl as ordinary channels | 5-10x on accepts, hostile connections handled at tens of thousands per second; refused-by-the-OS becomes rare | 200-300 lines of C, a ban/rate table shared with Tcl under a lock, a Windows-only runtime component; the largest risk of the options | **no** (a C component, the first in TclGuard itself) |
 | C | **Deeper listen queue** (`SOMAXCONN_HINT(n)`, Windows 8 / Server 2012 and later, 200-65,535) | absorbs bursts: a 1-2 second burst no longer refuses visitors | one line in the driver. Does nothing for a sustained flood, and a deep queue is a *wait* instead of a refusal: at 700 accepts per second a 2,000-entry queue means about 3 seconds of waiting, and most entries are already dead connections | yes |
 | D | **Put something in front** of a Windows guard: a Linux VPS running TclGuard (nftables drops about 29,000 connections per second), a CDN, or a router with SYN-flood protection | removes the problem for the Windows machine | a second machine or a service | yes |
@@ -47,3 +47,35 @@ one fresh runner per variant, 150 attacker workers from 500 source addresses for
 3. **Only if A is not enough and Windows hosting matters**: B, kept as small as possible (a ban set and a per-source rate limit; everything else stays in Tcl).
 4. C is harmless and could be added with A, with a modest depth (about 1,000), once its latency effect has been measured.
 5. E is worth one afternoon of measurement before investing in A or B, because it would settle whether the upstream driver is already fixed.
+
+
+## Option A, tried: no effect
+
+Built and measured (`acceptbench.yml`, one fresh runner per variant): register and unregister sockets with `WSAAsyncSelect` directly instead of by a blocking message
+to the helper thread (three fewer thread hand-offs for every connection that is created, accepted or closed).
+
+| bare accept-and-close on Windows | accepted per second |
+|---|---|
+| runtime without any socket patch | 711, 731, 828 (three runs) |
+| first patch version (reads and writes; the build that ships) | 676, 709 |
+| with direct registration (option A) | 532, 542, 872 |
+
+All within the run-to-run noise of this runner (the same variant varied by 1.5x between runs), so **no measurable effect**. The change was reverted; the shipped
+Windows runtime is the stress-tested one from before. What the experiments did show:
+
+* **The Tcl script is not where the time goes.** Timed inside the accept callback: the script *including* `close` takes 3-4 microseconds of the 1,200-1,500 microseconds
+  each accepted connection takes in wall-clock time (0% of the total). The cost is in the event machinery and the driver around it.
+* **`WSAAsyncSelect` itself is cheap**: about 25 microseconds per call, measured in C without Tcl (`winsock_cost.c`, `winsock-cost.yml`). Removing hand-offs to the
+  helper thread therefore could not have bought much, which is what the Tcl measurements found.
+* **The C model of Tcl's design is inconclusive.** A plain C server fed by 8 or 96 blocking client threads manages only 420-850 accepts per second whatever the server
+  does (blocking `accept()`, notification-driven, draining or not): the *client* side of that test is the limit (blocking `connect()` on Windows is slow), so it cannot
+  rank server designs. It also shows that draining every pending connection per notification (what option A's accept loop would add) is not the lever: 437/s with
+  48 wake-ups against 421/s with 4,300.
+* **What is still unexplained:** Python (blocking `accept()`, one thread) handled 2,955, 7,883 and 13,382 accepts per second against the *same* flood generator, 4-20x
+  what Tcl does, so a faster accept path exists on this machine; I do not know which part of Tcl's path costs the 1.2 ms.
+
+## What would settle it
+
+A runtime built with timing probes (QueryPerformanceCounter around `accept()`, the channel set-up, the notifier wake-up and the event-loop turn, printed at exit)
+run in `acceptbench.yml` would show where the 1.2 ms goes in about an hour of work. Until then the only option with evidence behind it is **B** (a native acceptor: a blocking
+`accept()` loop in its own thread is the one design shown to reach thousands per second on this machine), or **D** (something in front).
