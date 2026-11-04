@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [new-timed, unpatched-timed, new-bare, unpatched-bare, python]
+        variant: [new-bare, new-state, prev-bare, unpatched-bare, python]
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
