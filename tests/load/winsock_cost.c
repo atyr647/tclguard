@@ -10,6 +10,8 @@
  *      5  as 3, but Tcl's locking: the main thread holds a lock (an auto-reset event, as Tcl's socketListLock is) for the whole drain loop, and the pump thread takes it
  *         for every notification it handles
  *      6  as 5, but the main thread drains WITHOUT holding the lock
+ *      7  as 3, but the pump thread burns about 20 microseconds of CPU per notification (a slower message handler)
+ *      8  as 3, but accepted sockets are registered for FD_CLOSE only (fewer notifications per connection)
  *      4  as 3 but the registrations are synchronous messages to the pump thread, three per connection (on, on, off), as in Tcl's driver
  */
 #define WIN32_LEAN_AND_MEAN
@@ -20,7 +22,7 @@
 #include <string.h>
 
 #define NOTIFY_MSG (WM_USER + 1)
-static HWND hwnd; static HANDLE hAcc, hReady, hLock; static int useLock;
+static HWND hwnd; static HANDLE hAcc, hReady, hLock; static int useLock, burn, regmask = FD_READ | FD_WRITE | FD_CLOSE;
 static volatile LONG stop_pump, stop_clients;
 static int port = 19090;
 
@@ -29,6 +31,7 @@ static double now(void) { LARGE_INTEGER f, c; QueryPerformanceFrequency(&f); Que
 #define SELECT_MSG (WM_USER + 2)
 static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (m == NOTIFY_MSG) {
+        if (burn) { double t = now() + burn * 1e-6; while (now() < t) { } }
         if (useLock) WaitForSingleObject(hLock, INFINITE);
         if (WSAGETSELECTEVENT(l) == FD_ACCEPT) SetEvent(hAcc);
         if (useLock) SetEvent(hLock);
@@ -61,7 +64,9 @@ static DWORD WINAPI client(LPVOID a) {
 
 int main(int argc, char **argv) {
     WSADATA w; int mode = argc > 2 ? atoi(argv[2]) : 0, i; HANDLE th;
-    hLock = CreateEventA(NULL, FALSE, TRUE, NULL); useLock = argc > 2 && atoi(argv[2]) >= 5;
+    hLock = CreateEventA(NULL, FALSE, TRUE, NULL); useLock = argc > 2 && (atoi(argv[2]) == 5 || atoi(argv[2]) == 6);
+    if (argc > 2 && atoi(argv[2]) == 7) burn = 20;
+    if (argc > 2 && atoi(argv[2]) == 8) regmask = FD_CLOSE;
     hAcc = CreateEventA(NULL, FALSE, FALSE, NULL); hReady = CreateEventA(NULL, TRUE, FALSE, NULL);
     WSAStartup(MAKEWORD(2, 2), &w);
     th = CreateThread(NULL, 0, pump, NULL, 0, NULL); WaitForSingleObject(hReady, 5000);
@@ -95,8 +100,8 @@ int main(int argc, char **argv) {
                     double ta = now(); SOCKET c = accept(ls, NULL, NULL);
                     if (c == INVALID_SOCKET) break;
                     acc_us += (now() - ta) * 1e6; nacc++;
-                    if (mode == 3 || mode >= 5) { WSAAsyncSelect(c, hwnd, NOTIFY_MSG, FD_READ | FD_WRITE | FD_CLOSE); WSAAsyncSelect(c, hwnd, 0, 0); }
-                    if (mode >= 4) { SendMessage(hwnd, SELECT_MSG, 1, (LPARAM) c); SendMessage(hwnd, SELECT_MSG, 1, (LPARAM) c); SendMessage(hwnd, SELECT_MSG, 0, (LPARAM) c); }
+                    if (mode == 3 || mode >= 5) { WSAAsyncSelect(c, hwnd, NOTIFY_MSG, regmask); WSAAsyncSelect(c, hwnd, 0, 0); }
+                    if (mode == 4) { SendMessage(hwnd, SELECT_MSG, 1, (LPARAM) c); SendMessage(hwnd, SELECT_MSG, 1, (LPARAM) c); SendMessage(hwnd, SELECT_MSG, 0, (LPARAM) c); }
                     closesocket(c); accepted++;
                     if (mode == 1) break;
                 }
