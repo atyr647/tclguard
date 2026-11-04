@@ -143,6 +143,10 @@ connection did not stall once; the first patch version stalled on the 1,300th TL
 fresh runners without a stall or error while being about twice as fast as the control (6,000 sessions in 42 s instead of 90). That is evidence, not a proof: the change
 is to a 20-year-old part of Tcl, it has been exercised for 18,000 keep-alive sessions, all the suites on real Windows, and three flood runs, but not for months in production.
 
+One more Windows finding, isolated with `winbench.tcl`: in Tcl 8.6.14 for Windows a callback that re-queues itself with `after idle` starves *every* timer (even a watchdog
+timer never fires), while plain timers run at about 486,000 per second and the same test on Linux is fine. It is not in the patched driver (the unpatched runtime did the same)
+and TclGuard has no loop of that shape (its only `after idle` is a single call in the certificate code), so nothing was changed; it is a trap to avoid in any future code.
+
 What this means in practice: **on Windows TclGuard now holds ordinary hostility and a moderate connection flood**; it still does not match Linux, and a determined
 flood from many addresses will cost some visitors a refused connection. For a Windows host that matters, put the guard on a Linux VPS in front (the setup the README
 recommends) or run it on Linux.
