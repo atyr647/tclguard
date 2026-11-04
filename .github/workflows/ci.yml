@@ -382,3 +382,35 @@ jobs:
           name: macos-gui
           path: ${{ runner.temp }}/macos-gui.png
           if-no-files-found: ignore
+
+  # The Intel Mac program (built on an Intel runner, see runtime-macos.yml) was only ever started, never put through the suites.
+  macos-intel:
+    timeout-minutes: 40
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: stable }
+      - name: Released starpack (x86_64, built on an Intel Mac runner) - version and self-test
+        run: |
+          uname -m
+          chmod +x releases/tclguard-macos-x86_64
+          xattr -cr releases/tclguard-macos-x86_64 || true
+          releases/tclguard-macos-x86_64 version
+          releases/tclguard-macos-x86_64 selftest
+      - name: Released starpack - the installer installs the single file, and the installed copy removes itself
+        if: ${{ !cancelled() }}
+        run: releases/tclguard-macos-x86_64 eval tests/platform/macos_install_starpack_test.tcl
+      - name: Released starpack - integration, TLS, updates, descriptors
+        if: ${{ !cancelled() }}
+        run: |
+          brew install openssl@3 || true
+          export TG_CMD="$PWD/releases/tclguard-macos-x86_64"
+          cd tests/integration
+          python3 -u test_http.py && python3 -u test_features.py && python3 -u test_tls.py && python3 -u test_ipv6.py
+          python3 -u test_fdlimit.py && python3 -u test_reserve.py
+          export PATH="$(brew --prefix openssl@3)/bin:$PATH"
+          python3 -u test_update_starpack.py
+      - name: Released starpack - GUI smoke test under Aqua
+        if: ${{ !cancelled() }}
+        run: releases/tclguard-macos-x86_64 eval tests/gui/smoke.tcl
