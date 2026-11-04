@@ -1,0 +1,33 @@
+name: sockprof
+
+# Investigation only: a Windows runtime with timing probes in Tcl's socket driver (tools/patches/profile/), run through the accept
+# benchmark under a connection flood. The probe output is what is wanted.
+on:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: stable }
+      - name: Build the flood generator
+        run: cd tests/load/tgload; go build -o ../tgload-bin.exe .
+      - name: Profile the accept path
+        shell: pwsh
+        run: |
+          $rt = (Resolve-Path .\tools\profiling\rt-windows-profile-console.exe).Path
+          $gen = (Resolve-Path .\tests\load\tgload-bin.exe).Path
+          $env:TG_SOCKPROF = "1"; $env:ACCEPT_PORT = "18080"
+          foreach ($mode in 'bare') {
+            $env:ACCEPT_MODE = $mode
+            $p = Start-Process -FilePath $rt -ArgumentList @('tests\load\winbench.tcl','accept','24') -RedirectStandardOutput out.txt -RedirectStandardError err.txt -PassThru -NoNewWindow
+            Start-Sleep 4
+            & $gen connflood -addr "127.0.0.1:18080" -workers 150 -dur 20s -srcbase 127.0.3.0 -srcn 500 2>&1 | Select-Object -Last 2
+            $p | Wait-Process -Timeout 25 -ErrorAction SilentlyContinue
+            if (-not $p.HasExited) { $p | Stop-Process -Force }
+            Write-Host "---- stdout"; Get-Content out.txt
+            Write-Host "---- stderr (probes)"; Get-Content err.txt
+          }
