@@ -1,26 +1,26 @@
 name: stress-win
 
 # Repeats the keep-alive pattern that stalled once on Windows in CI, against the shipped program and against a control
-# built from the same source on the unpatched Tcl runtime, and counts stalls.
+# built from the same source on the unpatched Tcl runtime, and counts stalls. One fresh runner per run, because a run
+# uses up the machine's ephemeral ports for a couple of minutes.
 on:
   workflow_dispatch:
 
 jobs:
   windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [control, shipped]
+        rep: [1, 2, 3]
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Keep-alive stress, control (unpatched runtime) then shipped program
+      - name: Keep-alive stress (${{ matrix.variant }}, run ${{ matrix.rep }})
         shell: pwsh
         run: |
-          $ctl = (Resolve-Path .\tests\load\control\tclguard-windows-control-console.exe).Path
-          $rel = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
-          foreach ($round in 1,2) {
-            foreach ($pair in @(@('control', $ctl), @('shipped', $rel))) {
-              Write-Host "=== round $round : $($pair[0])"
-              $env:TG_CMD = $pair[1]
-              python -u tests/integration/stress_keepalive.py 2500 150
-            }
-          }
-          exit 0
+          if ('${{ matrix.variant }}' -eq 'control') { $env:TG_CMD = (Resolve-Path .\tests\load\control\tclguard-windows-control-console.exe).Path }
+          else { $env:TG_CMD = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path }
+          python -u tests/integration/stress_keepalive.py 3000 200
+          exit $LASTEXITCODE
