@@ -1,0 +1,520 @@
+--- a/win/tclWinSock.c
++++ b/win/tclWinSock.c
+@@ -307,10 +307,72 @@
+  * Simple wrapper round the SendMessage syscall.
+  */
+ 
++/*
++ * TclGuard patch: readyEvents is written by the socket thread (SocketProc) and by the Tcl thread.
++ * Plain |= / &= are read-modify-write and can lose each other's update, so the paths touched by
++ * the patch use interlocked operations.
++ */
++#define TG_ACCEPT_BATCH 16
++#define TG_SET_READY(st, bits)   InterlockedOr((volatile LONG *) &(st)->readyEvents, (LONG) (bits))
++#define TG_CLEAR_READY(st, bits) InterlockedAnd((volatile LONG *) &(st)->readyEvents, ~((LONG) (bits)))
++
+ #define SendSelectMessage(tsdPtr, message, payload)     \
+     SendMessageW((tsdPtr)->hwnd, SOCKET_SELECT,          \
+                 (WPARAM) (message), (LPARAM) (payload))
+ 
++/* ---- TclGuard PROFILING build only: where does the time of an accepted connection go? Printed every 6 s when TG_SOCKPROF is set. ---- */
++#include <stdio.h>
++enum { P_EVENT, P_LOCK1, P_ACCEPT_OK, P_ACCEPT_EMPTY, P_BATCH, P_TCPACCEPT, P_GNI, P_CREATE, P_CB, P_DSEL, P_CLOSE, P_CLOSESOCK,
++       P_THR_INS, P_THR_REM, P_SOCKPROC, P_FDACCEPT, P_GAP, P_N };
++static const char *pname[P_N] = { "accept event, whole (entry to return)", "waiting for the socket list lock (event entry)", "accept() that took a connection",
++    "accept() that found nothing", "connections per accept event (sum shown as 'ms', read: total / calls)", "TcpAccept (whole)", "getnameinfo",
++    "Tcl_CreateChannel (incl. thread-insert)", "accept callback (the script, incl. close)", "WSAAsyncSelect by the Tcl thread (all calls)",
++    "TcpCloseProc (whole)", "closesocket", "thread action INSERT", "thread action REMOVE", "SocketProc (socket thread, per message)",
++    "FD_ACCEPT notifications received (count only)", "time between two accept events (all of it)" };
++static volatile LONGLONG pv[P_N]; static volatile LONG pn[P_N]; static LONGLONG plast;
++static LONGLONG pnow(void) { LARGE_INTEGER c; QueryPerformanceCounter(&c); return c.QuadPart; }
++#define PSTART LONGLONG pt0 = pnow()
++#define PEND(i) do { InterlockedExchangeAdd64(&pv[i], pnow() - pt0); InterlockedIncrement(&pn[i]); } while (0)
++static void PDump(void) {
++    LARGE_INTEGER f; int i; QueryPerformanceFrequency(&f);
++    fprintf(stderr, "---- socket driver probes\n");
++    for (i = 0; i < P_N; i++) {
++	if (i == P_BATCH) { fprintf(stderr, "%-62s %9ld events, %.2f connections per event\n", pname[i], (long) pn[i], pn[i] ? (double) pv[i] / pn[i] : 0.0); continue; }
++	fprintf(stderr, "%-62s %9ld calls %10.1f ms total %9.1f us each\n", pname[i], (long) pn[i], pv[i] * 1000.0 / f.QuadPart,
++		pn[i] ? pv[i] * 1e6 / f.QuadPart / pn[i] : 0.0);
++    }
++    fflush(stderr);
++}
++
++/*
++ * TclGuard patch: the same registration the socket thread performs for a SOCKET_SELECT message (see SocketProc), done by the
++ * calling thread itself. WSAAsyncSelect() may be called from any thread for a window owned by another one. The synchronous
++ * SendMessage round trip to the socket thread (about 100 microseconds each, three per connection) is what, together with accepting
++ * one connection per notification, made the accept rate collapse under a connection flood: with both removed a raw accept loop
++ * holds 9,000+ connections per second, with only the messages left it fell to a few hundred and then to nothing (measured with
++ * tests/load/winsock_cost.c on a Windows runner, docs/WINDOWS-ACCEPT.md). It is used only where just the registration matters:
++ * creating and closing a channel, accepting and connecting. It is NOT used where the original relies on the socket thread having
++ * finished with the socket before a read or select() (the blocking paths).
++ */
++static void
++TgDirectSelect(
++    ThreadSpecificData *tsdPtr,
++    int message,
++    TcpState *statePtr)
++{
++    TcpFdList *fds;
++    PSTART;
++
++    for (fds = statePtr->sockets; fds != NULL; fds = fds->next) {
++	if (message == SELECT) {
++	    WSAAsyncSelect(fds->fd, tsdPtr->hwnd, SOCKET_MESSAGE, statePtr->selectEvents);
++	} else {
++	    WSAAsyncSelect(fds->fd, tsdPtr->hwnd, 0, 0);
++	}
++    }
++    PEND(P_DSEL);
++}
++
+ 
+ /*
+  * Address print debug functions
+@@ -768,6 +830,7 @@
+     int bytesRead;
+     DWORD error;
+     ThreadSpecificData *tsdPtr = (ThreadSpecificData *)TclThreadDataKeyGet(&dataKey);
++    int fastNb = GOT_BITS(statePtr->flags, TCP_NONBLOCKING); /* TclGuard: see below */
+ 
+     *errorCodePtr = 0;
+ 
+@@ -810,7 +873,19 @@
+      */
+ 
+     while (1) {
+-	SendSelectMessage(tsdPtr, UNSELECT, statePtr);
++	/*
++	 * TclGuard patch: for a NON-blocking socket do not send the synchronous UNSELECT/SELECT
++	 * messages to the socket thread (two thread switches each, on every recv()). Instead FD_READ
++	 * is cleared BEFORE recv(): data that arrives while/after we read makes WinSock post a fresh
++	 * FD_READ (it re-arms itself inside recv()), which sets the flag again. A flag set by an older
++	 * message for data we are about to consume only causes one harmless extra poll (the check
++	 * proc and recv() both cope with "nothing there").
++	 */
++	if (fastNb) {
++	    TG_CLEAR_READY(statePtr, FD_READ);
++	} else {
++	    SendSelectMessage(tsdPtr, UNSELECT, statePtr);
++	}
+ 
+ 	/*
+ 	 * Single fd operation: this proc is only called for a connected
+@@ -818,7 +893,9 @@
+ 	 */
+ 
+ 	bytesRead = recv(statePtr->sockets->fd, buf, bufSize, 0);
+-	CLEAR_BITS(statePtr->readyEvents, FD_READ);
++	if (!fastNb) {
++	    CLEAR_BITS(statePtr->readyEvents, FD_READ);
++	}
+ 
+ 	/*
+ 	 * Check for end-of-file condition or successful read.
+@@ -878,7 +955,9 @@
+ 	}
+     }
+ 
+-    SendSelectMessage(tsdPtr, SELECT, statePtr);
++    if (!fastNb) {
++	SendSelectMessage(tsdPtr, SELECT, statePtr);
++    }
+ 
+     return bytesRead;
+ }
+@@ -911,6 +990,7 @@
+     int written;
+     DWORD error;
+     ThreadSpecificData *tsdPtr = (ThreadSpecificData *)TclThreadDataKeyGet(&dataKey);
++    int fastNb = GOT_BITS(statePtr->flags, TCP_NONBLOCKING); /* TclGuard: see TcpInputProc */
+ 
+     *errorCodePtr = 0;
+ 
+@@ -936,7 +1016,9 @@
+     }
+ 
+     while (1) {
+-	SendSelectMessage(tsdPtr, UNSELECT, statePtr);
++	if (!fastNb) {
++	    SendSelectMessage(tsdPtr, UNSELECT, statePtr);
++	}
+ 
+ 	/*
+ 	 * Single fd operation: this proc is only called for a connected
+@@ -968,7 +1050,19 @@
+ 
+ 	error = WSAGetLastError();
+ 	if (error == WSAEWOULDBLOCK) {
+-	    CLEAR_BITS(statePtr->readyEvents, FD_WRITE);
++	    if (fastNb) {
++		/*
++		 * TclGuard patch: the send buffer is full (rare). Here the original ordering matters (a
++		 * FD_WRITE posted between the failed send and the clear would be lost and the channel
++		 * would stall), so take the original synchronous path: unselect, clear, re-select
++		 * (re-selecting posts FD_WRITE again if the socket is writable by now).
++		 */
++		SendSelectMessage(tsdPtr, UNSELECT, statePtr);
++		CLEAR_BITS(statePtr->readyEvents, FD_WRITE);
++		SendSelectMessage(tsdPtr, SELECT, statePtr);
++	    } else {
++		CLEAR_BITS(statePtr->readyEvents, FD_WRITE);
++	    }
+ 	    if (GOT_BITS(statePtr->flags, TCP_NONBLOCKING)) {
+ 		*errorCodePtr = EWOULDBLOCK;
+ 		written = -1;
+@@ -992,7 +1086,9 @@
+ 	}
+     }
+ 
+-    SendSelectMessage(tsdPtr, SELECT, statePtr);
++    if (!fastNb) {
++	SendSelectMessage(tsdPtr, SELECT, statePtr);
++    }
+ 
+     return written;
+ }
+@@ -1024,6 +1120,7 @@
+     /* TIP #218 */
+     int errorCode = 0;
+     ThreadSpecificData *tsdPtr = TCL_TSD_INIT(&dataKey);
++    PSTART;
+ 
+     /*
+      * Check that WinSock is initialized; do not call it if not, to prevent
+@@ -1042,10 +1139,10 @@
+ 	    TcpFdList *thisfd = statePtr->sockets;
+ 
+ 	    statePtr->sockets = thisfd->next;
+-	    if (closesocket(thisfd->fd) == SOCKET_ERROR) {
++	    { PSTART; if (closesocket(thisfd->fd) == SOCKET_ERROR) {
+ 		TclWinConvertError((DWORD) WSAGetLastError());
+ 		errorCode = Tcl_GetErrno();
+-	    }
++	    } PEND(P_CLOSESOCK); }
+ 	    ckfree(thisfd);
+ 	}
+     }
+@@ -1089,6 +1186,7 @@
+      */
+ 
+     ckfree(statePtr);
++    PEND(P_CLOSE);
+     return errorCode;
+ }
+ 
+@@ -1838,7 +1936,7 @@
+ 		 * Activate accept notification.
+ 		 */
+ 
+-		SendSelectMessage(tsdPtr, SELECT, statePtr);
++		TgDirectSelect(tsdPtr, SELECT, statePtr);
+ 	    }
+ 
+ 	    /*
+@@ -1934,7 +2032,7 @@
+ 	 * automatically places the socket into non-blocking mode.
+ 	 */
+ 
+-	SendSelectMessage(tsdPtr, SELECT, statePtr);
++	TgDirectSelect(tsdPtr, SELECT, statePtr);
+     } else {
+ 	/*
+ 	 * Connect failed
+@@ -2131,7 +2229,7 @@
+      */
+ 
+     statePtr->selectEvents = FD_READ | FD_CLOSE | FD_WRITE;
+-    SendSelectMessage(tsdPtr, SELECT, statePtr);
++    TgDirectSelect(tsdPtr, SELECT, statePtr);
+ 
+     snprintf(channelName, sizeof(channelName), SOCK_TEMPLATE, statePtr);
+     statePtr->channel = Tcl_CreateChannel(&tcpChannelType, channelName,
+@@ -2311,7 +2409,7 @@
+ 	 */
+ 
+ 	ioctlsocket(sock, (long) FIONBIO, &flag);
+-	SendSelectMessage(tsdPtr, SELECT, statePtr);
++	TgDirectSelect(tsdPtr, SELECT, statePtr);
+ 	if (Tcl_SetChannelOption(interp, statePtr->channel, "-eofchar", "")
+ 	    == TCL_ERROR) {
+ 	    Tcl_Close(NULL, statePtr->channel);
+@@ -2379,11 +2477,13 @@
+      */
+ 
+     newInfoPtr->selectEvents = (FD_READ | FD_WRITE | FD_CLOSE);
+-    SendSelectMessage(tsdPtr, SELECT, newInfoPtr);
++    TgDirectSelect(tsdPtr, SELECT, newInfoPtr);
+ 
+     snprintf(channelName, sizeof(channelName), SOCK_TEMPLATE, newInfoPtr);
++    { PSTART;
+     newInfoPtr->channel = Tcl_CreateChannel(&tcpChannelType, channelName,
+ 	    newInfoPtr, (TCL_READABLE | TCL_WRITABLE));
++    PEND(P_CREATE); }
+     if (Tcl_SetChannelOption(NULL, newInfoPtr->channel, "-translation",
+ 	    "auto crlf") == TCL_ERROR) {
+ 	Tcl_Close(NULL, newInfoPtr->channel);
+@@ -2400,10 +2500,14 @@
+      */
+ 
+     if (statePtr->acceptProc != NULL) {
++	{ PSTART;
+ 	getnameinfo(&(addr.sa), len, host, sizeof(host), port, sizeof(port),
+                     NI_NUMERICHOST|NI_NUMERICSERV);
++	PEND(P_GNI); }
++	{ PSTART;
+ 	statePtr->acceptProc(statePtr->acceptProcData, newInfoPtr->channel,
+ 			    host, atoi(port));
++	PEND(P_CB); }
+     }
+ }
+ 
+@@ -2723,7 +2827,11 @@
+      * Find the specified socket on the socket list.
+      */
+ 
+-    WaitForSingleObject(tsdPtr->socketListLock, INFINITE);
++    {
++	PSTART;
++	WaitForSingleObject(tsdPtr->socketListLock, INFINITE);
++	PEND(P_LOCK1);
++    }
+     for (statePtr = tsdPtr->socketList; statePtr != NULL;
+ 	    statePtr = statePtr->nextPtr) {
+ 	if (statePtr->sockets->fd == eventPtr->socket) {
+@@ -2774,68 +2882,90 @@
+      */
+ 
+     if (GOT_BITS(statePtr->readyEvents, FD_ACCEPT)) {
+-	for (fds = statePtr->sockets; fds != NULL; fds = fds->next) {
+-	    /*
+-	     * Accept the incoming connection request.
+-	     */
++	LONGLONG pev0 = pnow();
++	{
++	    static LONGLONG plastdump; LARGE_INTEGER pf;
++	    if (plast) { InterlockedExchangeAdd64(&pv[P_GAP], pev0 - plast); InterlockedIncrement(&pn[P_GAP]); }
++	    plast = pev0;
++	    QueryPerformanceFrequency(&pf);
++	    if (!plastdump) { plastdump = pev0; }
++	    if (getenv("TG_SOCKPROF") && pev0 - plastdump > 6 * pf.QuadPart) { PDump(); plastdump = pev0; }
++	}
++	/*
++	 * TclGuard patch: take every connection that is already waiting (up to TG_ACCEPT_BATCH) out of the kernel's queue in one tight
++	 * loop, and only then do the per-connection work of TcpAccept(). The original accepts ONE connection per notification; with
++	 * WSAAsyncSelect(FD_ACCEPT) that is what made the accept rate collapse under load (measured on a Windows Server 2025 runner
++	 * with the same flood generator: 2,700 accepts/s falling to 30-70/s, against about 7,500/s sustained when the pending
++	 * connections are drained in a loop, and about 12,000/s for a plain blocking accept(); see docs/WINDOWS-ACCEPT.md).
++	 * The lock is held throughout, as in the original, so the socket thread cannot add to acceptEventCount meanwhile.
++	 */
++	SOCKET batch[TG_ACCEPT_BATCH];
++	address baddr[TG_ACCEPT_BATCH];
++	TcpFdList *bfds[TG_ACCEPT_BATCH];
++	int nb = 0, i;
++
++	for (fds = statePtr->sockets; fds != NULL && nb < TG_ACCEPT_BATCH; fds = fds->next) {
++	    while (nb < TG_ACCEPT_BATCH) {
++		len = sizeof(baddr[nb]);
++		{ PSTART; newSocket = accept(fds->fd, &(baddr[nb].sa), &len); if (newSocket == INVALID_SOCKET) { PEND(P_ACCEPT_EMPTY); } else { PEND(P_ACCEPT_OK); } }
+ 
+-	    len = sizeof(address);
+-	    newSocket = accept(fds->fd, &(addr.sa), &len);
+-
+-	    /*
+-	     * On Tcl server sockets with multiple OS fds we loop over the fds
+-	     * trying an accept() on each, so we expect INVALID_SOCKET.  There
+-	     * are also other network stack conditions that can result in
+-	     * FD_ACCEPT but a subsequent failure on accept() by the time we
+-	     * get around to it.
+-	     *
+-	     * Access to sockets (acceptEventCount, readyEvents) in socketList
+-	     * is still protected by the lock (prevents reintroduction of
+-	     * SF Tcl Bug 3056775.
+-	     */
++		/*
++		 * On Tcl server sockets with multiple OS fds we loop over the fds trying an accept() on each, so we expect
++		 * INVALID_SOCKET (nothing waiting); other network stack conditions can also result in FD_ACCEPT but a failing accept().
++		 */
+ 
+-	    if (newSocket == INVALID_SOCKET) {
+-		/* int err = WSAGetLastError(); */
+-		continue;
++		if (newSocket == INVALID_SOCKET) {
++		    break;
++		}
++		batch[nb] = newSocket;
++		bfds[nb] = fds;
++		nb++;
+ 	    }
++	}
+ 
+-	    /*
+-	     * It is possible that more than one FD_ACCEPT has been sent, so
+-	     * an extra count must be kept. Decrement the count, and reset the
+-	     * readyEvent bit if the count is no longer > 0.
+-	     */
+-
+-	    statePtr->acceptEventCount--;
++	if (nb < TG_ACCEPT_BATCH) {
++	    /* Everything that was waiting has been taken (accept() said "would block"): wait for the next notification. */
++	    statePtr->acceptEventCount = 0;
++	    TG_CLEAR_READY(statePtr, FD_ACCEPT);
++	} else {
++	    /* The batch is full, more may be waiting: stay "ready" so that the next pass of the event loop comes back. */
++	    statePtr->acceptEventCount = 1;
++	}
+ 
+-	    if (statePtr->acceptEventCount <= 0) {
+-		CLEAR_BITS(statePtr->readyEvents, FD_ACCEPT);
+-	    }
++	SetEvent(tsdPtr->socketListLock);
+ 
+-	    SetEvent(tsdPtr->socketListLock);
++	for (i = 0; i < nb; i++) {
++	    int alive = 0;
++	    TcpState *p;
++	    TcpFdList *f;
+ 
+ 	    /*
+-	     * Caution: TcpAccept() has the side-effect of evaluating the
+-	     * server accept script (via AcceptCallbackProc() in tclIOCmd.c),
+-	     * which can close the server socket and invalidate statePtr and
+-	     * fds. If TcpAccept() accepts a socket we must return immediately
+-	     * and let SocketCheckProc queue additional FD_ACCEPT events.
++	     * Caution: TcpAccept() evaluates the server accept script (via AcceptCallbackProc() in tclIOCmd.c), which can close the
++	     * server socket and invalidate statePtr and fds. So before each connection look the listener up again; if it is gone,
++	     * the rest of the batch is closed (the original would have left them in the kernel queue, which is closed with the listener).
+ 	     */
+ 
+-	    TcpAccept(fds, newSocket, addr);
+-	    return 1;
+-	}
+-
+-	/*
+-	 * Loop terminated with no sockets accepted; clear the ready mask so
+-	 * we can detect the next connection request. Note that connection
+-	 * requests are level triggered, so if there is a request already
+-	 * pending, a new event will be generated.
+-	 */
+-
+-	statePtr->acceptEventCount = 0;
+-	CLEAR_BITS(statePtr->readyEvents, FD_ACCEPT);
++	    WaitForSingleObject(tsdPtr->socketListLock, INFINITE);
++	    for (p = tsdPtr->socketList; p != NULL && !alive; p = p->nextPtr) {
++		if (p == statePtr) {
++		    for (f = p->sockets; f != NULL; f = f->next) {
++			if (f == bfds[i]) {
++			    alive = 1;
++			    break;
++			}
++		    }
++		}
++	    }
++	    SetEvent(tsdPtr->socketListLock);
+ 
+-	SetEvent(tsdPtr->socketListLock);
++	    if (!alive) {
++		closesocket(batch[i]);
++		continue;
++	    }
++	    { PSTART; TcpAccept(bfds[i], batch[i], baddr[i]); PEND(P_TCPACCEPT); }
++	}
++	InterlockedExchangeAdd64(&pv[P_EVENT], pnow() - pev0); InterlockedIncrement(&pn[P_EVENT]);
++	InterlockedExchangeAdd64(&pv[P_BATCH], nb); InterlockedIncrement(&pn[P_BATCH]);
+ 	return 1;
+     }
+ 
+@@ -2882,6 +3012,16 @@
+ 	     * async select handler and keep waiting.
+ 	     */
+ 
++	    if (GOT_BITS(statePtr->flags, TCP_NONBLOCKING)) {
++		/*
++		 * TclGuard patch: no synchronous messages to the socket thread and no select() on a socket
++		 * that WSAAsyncSelect is still watching (the original unselects first, "so select will work
++		 * correctly"). The flag is cleared by TcpInputProc *before* it reads, so a flag left over
++		 * from a notification for data that was read in the meantime costs exactly one harmless
++		 * extra "readable" event whose read finds nothing (EWOULDBLOCK), after which it is gone.
++		 */
++		SET_BITS(mask, TCL_READABLE);
++	    } else {
+ 	    SendSelectMessage(tsdPtr, UNSELECT, statePtr);
+ 
+ 	    FD_ZERO(&readFds);
+@@ -2895,6 +3035,7 @@
+ 		CLEAR_BITS(statePtr->readyEvents, FD_READ);
+ 		SendSelectMessage(tsdPtr, SELECT, statePtr);
+ 	    }
++	    }
+ 	}
+     }
+ 
+@@ -3179,6 +3320,7 @@
+  *----------------------------------------------------------------------
+  */
+ 
++static LRESULT CALLBACK SocketProcInner(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+ static LRESULT CALLBACK
+ SocketProc(
+     HWND hwnd,
+@@ -3186,6 +3328,19 @@
+     WPARAM wParam,
+     LPARAM lParam)
+ {
++    PSTART;
++    LRESULT r = SocketProcInner(hwnd, message, wParam, lParam);
++    if (message == SOCKET_MESSAGE) { PEND(P_SOCKPROC); }
++    return r;
++}
++
++static LRESULT CALLBACK
++SocketProcInner(
++    HWND hwnd,
++    UINT message,
++    WPARAM wParam,
++    LPARAM lParam)
++{
+     int event, error;
+     SOCKET socket;
+     TcpState *statePtr;
+@@ -3263,9 +3418,10 @@
+ 
+ 	    if (GOT_BITS(event, FD_CLOSE)) {
+ 		statePtr->acceptEventCount = 0;
+-		CLEAR_BITS(statePtr->readyEvents, FD_WRITE | FD_ACCEPT);
++		TG_CLEAR_READY(statePtr, FD_WRITE | FD_ACCEPT);
+ 	    } else if (GOT_BITS(event, FD_ACCEPT)) {
+ 		statePtr->acceptEventCount++;
++		InterlockedIncrement(&pn[P_FDACCEPT]);
+ 	    }
+ 
+ 	    if (GOT_BITS(event, FD_CONNECT)) {
+@@ -3283,7 +3439,7 @@
+ 	     * Inform main thread about signaled events
+ 	     */
+ 
+-	    SET_BITS(statePtr->readyEvents, event);
++	    TG_SET_READY(statePtr, event);
+ 
+ 	    /*
+ 	     * Wake up the Main Thread.
+@@ -3433,6 +3589,8 @@
+     ThreadSpecificData *tsdPtr;
+     TcpState *statePtr = (TcpState *)instanceData;
+     int notifyCmd;
++    PSTART;
++    int pact = action == TCL_CHANNEL_THREAD_INSERT;
+ 
+     if (action == TCL_CHANNEL_THREAD_INSERT) {
+ 	/*
+@@ -3497,7 +3655,8 @@
+      * thread.
+      */
+ 
+-    SendSelectMessage(tsdPtr, notifyCmd, statePtr);
++    TgDirectSelect(tsdPtr, notifyCmd, statePtr);
++    if (pact) { PEND(P_THR_INS); } else { PEND(P_THR_REM); }
+ }
+ 
+ /*

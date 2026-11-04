@@ -97,7 +97,8 @@ case $target in
     # caps a proxy at ~1 ms per request and makes it refuse connections under load. This patch (win/tclWinSock.c only)
     # removes them for non-blocking sockets; see tools/patches/README.md. kitcreator applies tcl/patches/all/*.diff with patch -p1.
     # (remove our patches left in a reused build directory first: a stale one from an earlier experiment applies partly and silently)
-    mkdir -p tcl/patches/all && rm -f tcl/patches/all/tcl-8.6.14-winsock-*.diff && cp "$ROOT/tools/patches/tcl-8.6.14-winsock-nonblocking.diff" tcl/patches/all/
+    mkdir -p tcl/patches/all && rm -f tcl/patches/all/tcl-8.6.14-winsock-*.diff && cp "${TG_WINSOCK_DIFF:-$ROOT/tools/patches/tcl-8.6.14-winsock-nonblocking.diff}" tcl/patches/all/tcl-8.6.14-winsock-nonblocking.diff
+    # (TG_WINSOCK_DIFF replaces the patch for an experiment, e.g. tools/patches/profile/*; such a build is never installed or shipped)
     export TCLKIT PKG_CONFIG_LIBDIR=/usr/x86_64-w64-mingw32/lib/pkgconfig
     AR=x86_64-w64-mingw32-ar CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++ \
     RANLIB=x86_64-w64-mingw32-ranlib RC=x86_64-w64-mingw32-windres STRIP=x86_64-w64-mingw32-strip \
