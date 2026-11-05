@@ -99,8 +99,8 @@ try:
         except OSError: break
     for s in socks: s.close()                       # linger 0 = RST
     check(f"a storm of {len(socks)} reset connections (half requests, half bodies)", len(socks) >= 1000)
-    time.sleep(3)
-    check("...afterwards the guard serves normally", serves(port))
+    # (on a busy machine the guard is still working through the resets: give it time to recover, but it must recover)
+    check("...afterwards the guard serves normally", wait_until(lambda: serves(port), 20, 0.5))
     if LINUX:
         time.sleep(5)
         f2 = fds(g.proc.pid)

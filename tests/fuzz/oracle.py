@@ -62,8 +62,13 @@ def expected_identity(m, peer=b"127.0.0.1", trusted=(b"127.0.0.1",)):
     The client address comes from the configured header (X-Forwarded-For): rightmost entry that is not itself a
     trusted proxy; the chain keeps the client's header lines in their original order, then the peer."""
     xs = [v for n, v, _ in m.headers if n.lower() == b"x-forwarded-for"]
-    parts = [p.strip() for v in xs for p in v.split(b",")]
-    parts = [p for p in parts if p and _ip(p) is not None]
+    allp = [p.strip() for v in xs for p in v.split(b",")]
+    allp = [p for p in allp if p]
+    # the nearest entry (the last one) is what our own proxy appended; if it cannot be read, the whole header is not believed and the
+    # backend is told only about the peer (never a client-chosen entry further to the left)
+    if allp and (len(allp[-1]) > 45 or _ip(allp[-1]) is None):
+        return peer, peer
+    parts = [p for p in allp if _ip(p) is not None]
     if not parts:
         return peer, peer
     cand = parts[0]

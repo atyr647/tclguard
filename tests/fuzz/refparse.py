@@ -389,6 +389,10 @@ def parse_stream(d, flags=()):
 # ------------------------------------------------------- guard-forwarding model ---
 
 GUARD_DROP = {b"x-real-ip", b"forwarded", b"x-forwarded-for", b"x-forwarded-proto"}
+# Headers that only a trusted proxy may vouch for: from anyone else the guard removes them, because backends and frameworks read them as
+# "the client address / scheme / host" (Client-IP, True-Client-IP, X-Originating-IP, X-Forwarded-Host, ...).
+GUARD_DROP_UNTRUSTED = {b"true-client-ip", b"x-client-ip", b"client-ip", b"x-originating-ip", b"cf-connecting-ip", b"x-forwarded-host",
+                        b"x-forwarded-port", b"x-forwarded-ssl", b"front-end-https", b"x-url-scheme"}
 
 
 def norm_name(n):
@@ -401,7 +405,7 @@ def expected_head(m, d, forward_ip=True, peer=b"127.0.0.1"):
         return d[m.start:m.head_end]
     out = m.reqline
     for name, val, line in m.headers:
-        if norm_name(name) in GUARD_DROP:
+        if norm_name(name) in GUARD_DROP or norm_name(name) in GUARD_DROP_UNTRUSTED:
             continue
         out += b"\r\n" + line
     # the guard also tells the backend which scheme the client used (the fuzz listeners are plain HTTP)
