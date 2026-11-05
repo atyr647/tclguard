@@ -97,6 +97,7 @@ proc ::tg::acme::accountKey {} {
     if {[llength $acctKey]} { return $acctKey }
     set dir [file join [::tg::cfg::stateDir] acme]
     file mkdir $dir
+    catch {file attributes $dir -permissions 0700}
     set f [file join $dir account.key]
     if {[file exists $f]} {
         set acctKey [::tg::crypto::keyFromPem [::tg::tls::readFile $f]]

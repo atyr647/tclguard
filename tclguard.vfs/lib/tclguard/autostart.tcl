@@ -108,13 +108,13 @@ proc ::tg::autostart::enable {{cmd ""}} {
         macos {
             if {[catch {
                 file mkdir [file dirname [plistPath]]
-                ::tg::writeFileAtomic [plistPath] [plist $cmd]
+                ::tg::writeFileAtomic [plistPath] [plist $cmd] 0644
             } err]} { return "could not write [plistPath]: $err" }
         }
         default {
             if {[catch {
                 file mkdir [file dirname [desktopPath]]
-                ::tg::writeFileAtomic [desktopPath] [desktopEntry $cmd]
+                ::tg::writeFileAtomic [desktopPath] [desktopEntry $cmd] 0644
             } err]} { return "could not write [desktopPath]: $err" }
         }
     }

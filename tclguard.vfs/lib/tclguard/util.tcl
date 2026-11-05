@@ -101,17 +101,29 @@ proc ::tg::fmtTime {ms {fmt "%Y-%m-%d %H:%M:%S"}} {
     clock format [expr {$ms / 1000}] -format $fmt
 }
 
-# Atomic file write: write to a temp file in the same directory, then rename.
-proc ::tg::writeFileAtomic {path data} {
-    set tmp "$path.tmp[pid]"
-    set fh [open $tmp w]
-    fconfigure $fh -encoding utf-8
-    try {
-        puts -nonewline $fh $data
-    } finally {
-        close $fh
+# Atomic file write: write to a temp file in the same directory, then rename. The temp file is created exclusively (never through
+# a symbolic link somebody planted at a guessable name) with the final permissions from the first byte on: everything this program
+# writes can hold a secret (the control token, keys), so the default is owner-only (0600). Files that must be readable by other
+# accounts (systemd units, launchd plists, desktop entries, the install record) pass 0644 explicitly. The mode is ignored on Windows.
+proc ::tg::writeFileAtomic {path data {mode 0600}} {
+    set fh ""
+    for {set try 0} {$try < 8} {incr try} {
+        set tmp [format "%s.tmp%d-%x%04x" $path [pid] [clock microseconds] [expr {int(rand() * 65536)}]]
+        if {![catch {open $tmp [list WRONLY CREAT EXCL] $mode} fh]} break
+        set fh ""
     }
-    file rename -force -- $tmp $path
+    if {$fh eq ""} { error "cannot create a temporary file next to $path: $fh" }
+    try {
+        fconfigure $fh -encoding utf-8
+        puts -nonewline $fh $data
+        close $fh
+        set fh ""
+        file rename -force -- $tmp $path
+    } on error {err opts} {
+        if {$fh ne ""} { catch {close $fh} }
+        catch {file delete -force -- $tmp}
+        return -options $opts $err
+    }
 }
 
 proc ::tg::readFile {path} {
@@ -387,6 +399,24 @@ proc ::tg::ip::setItems {name} {
     dict get $sets($name) src
 }
 
+# Does the range/address `target` overlap any item of the set (either contains the other)? Used to refuse bans that would cover allow-listed addresses.
+proc ::tg::ip::overlapsSet {name target} {
+    set t [parseCidr $target]
+    if {$t eq ""} { return 0 }
+    lassign $t tf tb tn
+    foreach item [setItems $name] {
+        set c [parseCidr $item]
+        if {$c eq ""} continue
+        lassign $c cf cb cn
+        if {$cf != $tf} continue
+        set max [expr {$tf == 4 ? 32 : 128}]
+        set m [expr {min($tb, $cb)}]
+        set sh [expr {$max - $m}]
+        if {($tn >> $sh) == ($cn >> $sh)} { return 1 }
+    }
+    return 0
+}
+
 proc ::tg::ip::setMatch {name s} {
     variable sets
     if {![info exists sets($name)]} { return 0 }
@@ -460,6 +490,8 @@ proc ::tg::log::setFile {path} {
     if {$path eq ""} return
     if {[catch {
         file mkdir [file dirname $path]
+        # never append through a symbolic link (a program running as root must not write its log into whatever the link names)
+        if {![catch {file type $path} ft] && $ft eq "link"} { error "refusing to write the log through a symbolic link" }
         set fh [open $path a]
         fconfigure $fh -encoding utf-8 -buffering line
         set written [file size $path]

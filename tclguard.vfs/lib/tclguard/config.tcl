@@ -7,6 +7,8 @@
 namespace eval ::tg::cfg {
     variable path ""
     variable current {}
+    variable overrides {}      ;# general settings forced for this run by the command line: applied again after every (re)load, never written to disk
+    variable diskGeneral {}    ;# the general section as it is (or would be) on disk
 
     # ---- global settings -----------------------------------------------------
     variable generalDefaults {
@@ -426,6 +428,11 @@ proc ::tg::cfg::validate {cfg} {
     foreach k {hardenSynRate hardenSynBurst hardenConnLimit hardenUdpRate hardenUdpBurst hardenIcmpRate} {
         if {![::tg::isInt [dict get $G $k] 1 100000000]} { lappend errs "$k must be a positive whole number" }
     }
+    set tk [dict get $G controlToken]
+    if {$tk ne "" && [string length $tk] < 16} { lappend errs "controlToken is too short to be safe (at least 16 characters; leave it empty and one is generated)" }
+    if {$tk ne "" && ![regexp {^[\x21-\x7e]+$} $tk]} { lappend errs "controlToken may only contain printable characters without spaces" }
+    set ch [dict get $G controlHost]
+    if {$ch ni {localhost} && ![::tg::ip::isValid $ch]} { lappend errs "controlHost must be an IP address (or localhost), not '$ch'" }
     if {[dict get $G firewall] ni {auto nft iptables pf netsh none}} {
         lappend errs "firewall must be one of: auto nft iptables pf netsh none"
     }
@@ -621,16 +628,57 @@ proc ::tg::cfg::parseText {text} {
     return $out
 }
 
+proc ::tg::cfg::applyOverrides {} {
+    variable current
+    variable overrides
+    dict for {k v} $overrides { dict set current general $k $v }
+}
+
+# A setting forced by the command line (--no-firewall, --verbose): kept across reloads, not saved.
+proc ::tg::cfg::override {key value} {
+    variable overrides
+    variable current
+    dict set overrides $key $value
+    dict set current general $key $value
+}
+
 proc ::tg::cfg::load {file} {
     variable path
     variable current
+    variable diskGeneral
     set path $file
     if {![file exists $file]} {
         set current [new]
+        set diskGeneral [dict get $current general]
+        applyOverrides
         return 0
     }
     set text [::tg::readFile $file]
     set current [parseText $text]
+    set diskGeneral [dict get $current general]
+    applyOverrides
+    return 1
+}
+
+# Re-read the file for a running guard: parse AND validate into a scratch value first, and only a configuration that passed replaces the
+# live one (a file that is empty, missing, half-written by an editor or simply wrong leaves the running configuration untouched).
+proc ::tg::cfg::reloadFrom {file} {
+    variable current
+    variable diskGeneral
+    variable overrides
+    if {![file exists $file]} { error "configuration file $file does not exist; keeping the running configuration" }
+    set text [::tg::readFile $file]
+    set stripped {}
+    foreach line [split $text \n] { if {[string index [string trimleft $line] 0] ne "#"} { lappend stripped $line } }
+    if {[string trim [join $stripped \n]] eq ""} { error "configuration file $file is empty; keeping the running configuration" }
+    set new [parseText $text]
+    set disk [dict get $new general]
+    dict for {k v} $overrides { dict set new general $k $v }
+    lassign [validate $new] errs warns
+    if {[llength $errs]} { error "config has errors: [join $errs {; }] (the running configuration was not changed)" }
+    set current $new
+    set diskGeneral $disk
+    if {[ensureToken]} { catch {save} }
     return 1
 }
 
@@ -691,11 +739,21 @@ proc ::tg::cfg::serialize {cfg} {
 proc ::tg::cfg::save {{file ""} {cfg ""}} {
     variable path
     variable current
+    variable overrides
+    variable diskGeneral
     if {$file eq ""} { set file $path }
-    if {$cfg eq ""} { set cfg $current }
+    set own [expr {$cfg eq ""}]
+    if {$own} {
+        set cfg $current
+        # command-line overrides are for this run only: write the values the file had
+        dict for {k v} $overrides {
+            if {[dict exists $diskGeneral $k]} { dict set cfg general $k [dict get $diskGeneral $k] } else { catch {dict unset cfg general $k} }
+        }
+    }
     file mkdir [file dirname $file]
-    ::tg::writeFileAtomic $file [serialize $cfg]
-    catch { file attributes $file -permissions 0600 }   ;# contains the control token
+    ::tg::writeFileAtomic $file [serialize $cfg] 0600     ;# contains the control token: owner-only from the first byte
+    catch { file attributes $file -permissions 0600 }
+    if {$own} { set diskGeneral [dict get $cfg general] }
     return $file
 }
 
@@ -720,20 +778,21 @@ proc ::tg::randomHex {nBytes} {
         binary scan $d H* hex
         return $hex
     }
-    # Windows: ask the OS CSPRNG through PowerShell, fall back to a mixed seed.
+    # Windows: ask the OS CSPRNG through PowerShell (by its full path, not a name somebody could plant in a searched folder).
     if {$tcl_platform(platform) eq "windows"} {
+        set ps [file join [expr {[info exists ::env(SystemRoot)] ? $::env(SystemRoot) : {C:\Windows}}] System32 WindowsPowerShell v1.0 powershell.exe]
+        if {![file exists $ps]} { set ps powershell }
         if {![catch {
-            exec powershell -NoProfile -NonInteractive -Command \
+            exec $ps -NoProfile -NonInteractive -Command \
                 "\$b=New-Object byte\[\] $nBytes; \[Security.Cryptography.RandomNumberGenerator\]::Create().GetBytes(\$b); (\$b|ForEach-Object{\$_.ToString('x2')}) -join ''"
         } out]} {
             set out [string trim $out]
             if {[regexp "^\[0-9a-f\]{[expr {$nBytes * 2}]}\$" $out]} { return $out }
         }
     }
-    expr {srand([clock microseconds] ^ [pid])}
-    set hex ""
-    for {set i 0} {$i < $nBytes} {incr i} { append hex [format %02x [expr {int(rand() * 256)}]] }
-    return $hex
+    # There is deliberately NO fallback to a seeded rand(): Tcl's srand takes a 32-bit seed, so tokens and keys made from it could be
+    # searched for in minutes. No operating-system source means no secrets.
+    error "no secure random source is available on this system (no /dev/urandom, and the Windows CSPRNG could not be reached)"
 }
 
 # Files written by a process running as root inside a folder that belongs to someone else (the macOS "Restart as administrator"

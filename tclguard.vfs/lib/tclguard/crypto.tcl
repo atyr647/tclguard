@@ -54,14 +54,10 @@ proc ::tg::crypto::intToBytes {n len} {
     binary format H* [string repeat 0 [expr {$len * 2 - [string length $h]}]]$h
 }
 
-# Entropy for key material. Unlike ::tg::randomHex this REFUSES to fall back to a weak seed.
+# Entropy for key material: the operating system's source or an error (::tg::randomHex never falls back to a weak seed).
 proc ::tg::crypto::randomBytes {n} {
     set hex [::tg::randomHex $n]
     if {[string length $hex] != $n * 2} { error "no random source available" }
-    # ::tg::randomHex silently degrades to srand() when no OS source exists; detect that.
-    if {![file exists /dev/urandom] && $::tcl_platform(platform) ne "windows"} {
-        error "no OS random source (/dev/urandom) available"
-    }
     binary format H* $hex
 }
 

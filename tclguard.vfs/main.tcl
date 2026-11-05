@@ -32,7 +32,7 @@ proc usage {} {
 Usage:
   tclguard [--config FILE] [--headless | --gui] [--no-firewall] [--verbose]
         Run the guard. Opens the control window when a display is available.
-  tclguard ctl <command> [args]     Control a running instance:
+  tclguard ctl <command> [args]     Control a running instance (token: config file, or TCLGUARD_TOKEN in the environment):
         status | bans | top | listeners | log [n]
         ban <ip|cidr> [seconds|0=forever] [reason...]    unban <ip>    unbanall
         allow <ip|cidr>    disallow <ip|cidr>    block <ip|cidr>    unblock <ip|cidr>
@@ -217,6 +217,9 @@ proc cmdCtl {argv} {
     set host [::tg::cfg::general controlHost]
     set port [::tg::cfg::general controlPort]
     set tok  [::tg::cfg::general controlToken]
+    # TCLGUARD_TOKEN: the token the RUNNING guard was started with, for the moment after the one in the file was changed (rotation) and
+    # before the guard has been told to reload
+    if {[info exists ::env(TCLGUARD_TOKEN)] && $::env(TCLGUARD_TOKEN) ne ""} { set tok $::env(TCLGUARD_TOKEN) }
     if {$tok eq ""} { die "no controlToken in $path - has TclGuard been started once?" }
     lassign [::tg::control::request $host $port $tok {*}$argv] ok kind text
     if {!$ok} { die $text }
@@ -448,8 +451,8 @@ proc cmdRun {argv} {
     set nofw [takeOpt argv --no-firewall]
     set verbose [takeOpt argv --verbose]
     if {[llength $argv]} { die "unknown argument '[lindex $argv 0]' (see 'tclguard help')" }
-    if {$nofw ne ""} { dict set ::tg::cfg::current general firewall none }
-    if {$verbose ne ""} { dict set ::tg::cfg::current general logLevel debug }
+    if {$nofw ne ""} { ::tg::cfg::override firewall none }
+    if {$verbose ne ""} { ::tg::cfg::override logLevel debug }
     lassign [::tg::cfg::validate $::tg::cfg::current] errs warns
     foreach w $warns { puts stderr "warning: $w" }
     if {[llength $errs]} {

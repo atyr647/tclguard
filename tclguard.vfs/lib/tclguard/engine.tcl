@@ -129,6 +129,7 @@ proc ::tg::engine::reload {} {
     # allowlist/ports/hardening changed -> rebuild kernel state
     ::tg::fw::init
     if {[::tg::fw::enabled]} { ::tg::fw::sync } else { catch {::tg::fw::uninstall} }
+    ::tg::control::sync
     ::tg::log::info "configuration applied"
 }
 
@@ -242,6 +243,9 @@ proc ::tg::engine::cmd {verb args} {
             if {![::tg::isInt $sec 0 31536000]} { error "duration must be seconds (0 = forever)" }
             if {$reason eq ""} { set reason "manual ban" }
             if {[::tg::ban::isAllowed $ip]} { error "$ip is on the allowlist; remove it from the allowlist first" }
+            if {[::tg::ip::overlapsSet allow $ip]} { error "$ip would cover addresses on the allowlist; remove them from the allowlist first" }
+            lassign [::tg::ip::parseCidr $ip] pf pbits pnet
+            if {$pbits < ($pf == 4 ? 8 : 16)} { error "$ip is far too wide a range to ban (shortest allowed prefix: /[expr {$pf == 4 ? 8 : 16}])" }
             ::tg::ban::add $ip $reason $sec manual
             return "banned [::tg::ip::key $ip]"
         }
@@ -282,9 +286,7 @@ proc ::tg::engine::cmd {verb args} {
         log       { set n [lindex $args 0]; if {$n eq ""} { set n 50 }; return [::tg::log::tail $n info] }
         listeners { return [dict get [snapshot] listeners] }
         reload {
-            ::tg::cfg::load $::tg::cfg::path
-            lassign [::tg::cfg::validate $::tg::cfg::current] errs warns
-            if {[llength $errs]} { error "config has errors: [join $errs {; }]" }
+            ::tg::cfg::reloadFrom $::tg::cfg::path
             reload
             return "configuration reloaded"
         }

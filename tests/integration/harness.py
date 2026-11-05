@@ -86,6 +86,30 @@ class HttpBackend:
                     body, buf = buf[:n], buf[n:]
                 with self.lock: self.requests.append((lines[0], hdrs, body))
                 if hdrs.get("upgrade", "").lower() == "websocket":
+                    key = hdrs.get("sec-websocket-key")
+                    if key:      # a real WebSocket client (a browser): proper handshake and framing, echo "echo:<text>"
+                        import base64, hashlib, struct
+                        acc = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
+                        c.sendall(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n" % acc).encode())
+                        def need(n):
+                            nonlocal buf
+                            while len(buf) < n:
+                                d = c.recv(65536)
+                                if not d: raise EOFError
+                                buf += d
+                            out, buf = buf[:n], buf[n:]
+                            return out
+                        while True:
+                            b0, b1 = need(2); op = b0 & 15; ln = b1 & 127
+                            if ln == 126: ln = struct.unpack(">H", need(2))[0]
+                            elif ln == 127: ln = struct.unpack(">Q", need(8))[0]
+                            mask = need(4) if b1 & 128 else b""
+                            data = bytearray(need(ln))
+                            if mask:
+                                for i in range(len(data)): data[i] ^= mask[i % 4]
+                            if op == 8: c.sendall(b"\x88\x00"); return
+                            if op == 1:
+                                msg = b"echo:" + bytes(data); c.sendall(bytes([0x81, len(msg)]) + msg)
                     c.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
                     while True:
                         d = c.recv(65536)

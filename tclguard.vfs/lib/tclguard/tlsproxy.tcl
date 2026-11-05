@@ -52,6 +52,7 @@ proc ::tg::tls::enabled {L} {
 proc ::tg::tls::certDir {} {
     set d [file join [::tg::cfg::stateDir] certs]
     file mkdir $d
+    catch {file attributes $d -permissions 0700}
     return $d
 }
 
@@ -83,13 +84,19 @@ proc ::tg::tls::readFile {path} {
 }
 
 proc ::tg::tls::writeSecret {path data} {
+    # created exclusively with mode 0600 from the first byte (no window in which a key is readable by others, no symlink at the temp name)
     set tmp $path.new
-    set fh [open $tmp wb]
-    fconfigure $fh -translation binary
-    puts -nonewline $fh $data
-    close $fh
-    catch {file attributes $tmp -permissions 0600}
-    file rename -force $tmp $path
+    catch {file delete -force -- $tmp}
+    set fh [open $tmp [list WRONLY CREAT EXCL] 0600]
+    try {
+        fconfigure $fh -translation binary
+        puts -nonewline $fh $data
+        close $fh
+    } on error {err opts} {
+        catch {close $fh}; catch {file delete -force -- $tmp}
+        return -options $opts $err
+    }
+    file rename -force -- $tmp $path
 }
 
 # Make sure a usable certificate exists and is not about to expire; (re)generate a managed

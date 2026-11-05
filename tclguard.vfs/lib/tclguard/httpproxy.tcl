@@ -32,7 +32,7 @@ namespace eval ::tg::http {
 proc ::tg::http::prepare {name L} {
     variable secret
     ::tg::ip::setLoad "tp:$name" [dict get $L trustedProxies]
-    if {$secret eq ""} { set secret [::tg::randomHex 32] }
+    if {$secret eq ""} { set secret [::tg::randomHex 32] }   ;# (errors without an OS random source: no weak challenge secret)
 }
 
 proc ::tg::http::begin {id lname Lc pip pkey} {
@@ -84,6 +84,13 @@ proc ::tg::http::clientEof {id} {
     set bc $::tg::tcp::bc($id)
     if {$bc eq "" || $ps($id) eq "drain" || $buf($id) ne "" && $ps($id) eq "hdr"} {
         ::tg::tcp::close_ $id "client closed"
+        return
+    }
+    # The client went away in the middle of a request body (a reset, or a plain close before Content-Length / the last chunk): that request
+    # can never be completed. Waiting for the backend to answer would hold the client's and the backend's descriptor until the body timeout
+    # (30 s by default) for every such connection.
+    if {$ps($id) in {body csize cdata ccrlf ctrail}} {
+        ::tg::tcp::close_ $id "client closed mid-request"
         return
     }
     ::tg::tcp::sideClosed $id c2b $::tg::tcp::cc($id) $bc

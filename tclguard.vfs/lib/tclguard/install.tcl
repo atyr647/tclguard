@@ -719,7 +719,7 @@ proc ::tg::install::saveManifest {L m} {
     foreach d [missingDirs [file dirname $path]] { lappend created $d }
     file mkdir [file dirname $path]
     if {[info exists created]} { foreach d $created { addItem m [dict create type dir path $d] } }
-    ::tg::writeFileAtomic $path [manifestJson $m]
+    ::tg::writeFileAtomic $path [manifestJson $m] 0644
     return $m
 }
 
@@ -861,7 +861,7 @@ proc ::tg::install::installService {o L mVar} {
         set unit [dict get $L unitPath]
         foreach d [missingDirs [file dirname $unit]] { addItem m [dict create type dir path $d] }
         file mkdir [file dirname $unit]
-        ::tg::writeFileAtomic $unit [unitText [logical $bin] $confDir $stateDir]
+        ::tg::writeFileAtomic $unit [unitText [logical $bin] $confDir $stateDir] 0644
         catch { file attributes $unit -permissions 0644 }
         addItem m [dict create type service manager systemd name $serviceName.service path $unit]
         if {[have systemctl]} {
@@ -876,7 +876,7 @@ proc ::tg::install::installService {o L mVar} {
     } else {
         set plist [dict get $L plistPath]
         file mkdir [file dirname $plist]
-        ::tg::writeFileAtomic $plist [daemonPlist [logical $bin] $confDir]
+        ::tg::writeFileAtomic $plist [daemonPlist [logical $bin] $confDir] 0644
         catch { file attributes $plist -permissions 0644 }
         addItem m [dict create type service manager launchd name $daemonLabel path $plist]
         note "The LaunchDaemon starts TclGuard at the next boot. To start it now: sudo launchctl bootstrap system [logical $plist]   (edit [logical [dict get $L confPath]] first)"
@@ -925,7 +925,7 @@ proc ::tg::install::runInner {options} {
                 set df [dict get $L desktopFile]
                 foreach d [missingDirs [file dirname $df]] { addItem m [dict create type dir path $d] }
                 file mkdir [file dirname $df]
-                ::tg::writeFileAtomic $df [desktopFileText [logical [dict get $L binPath]]]
+                ::tg::writeFileAtomic $df [desktopFileText [logical [dict get $L binPath]]] 0644
                 addItem m [dict create type file path $df]
             }
             if {[dict get $L scope] eq "system"} {
