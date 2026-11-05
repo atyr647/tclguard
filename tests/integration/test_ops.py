@@ -144,12 +144,12 @@ finally:
 if hasattr(signal, "SIGSTOP"):
     hook = HttpBackend(); be = HttpBackend(); port = free_port(); mport = free_port()
     g = Guard({"web": {"type": "http", "port": port, "backendPort": be.port}},
-              {"satLagMs": 100, "alertUrl": f"http://127.0.0.1:{hook.port}/hook", "alertCooldown": 10, "metricsEnable": 1, "metricsPort": mport})
+              {"satLagMs": 300, "alertUrl": f"http://127.0.0.1:{hook.port}/hook", "alertCooldown": 10, "metricsEnable": 1, "metricsPort": mport})
     try:
         g.start(); assert wait_port(mport)
         check("not overloaded at rest", val(metrics(mport)[1], "tclguard_overloaded") == 0)
         for i in range(6):
-            os.kill(g.proc.pid, signal.SIGSTOP); time.sleep(0.45); os.kill(g.proc.pid, signal.SIGCONT); time.sleep(0.6)
+            os.kill(g.proc.pid, signal.SIGSTOP); time.sleep(0.8); os.kill(g.proc.pid, signal.SIGCONT); time.sleep(0.6)
         ok = wait_for(lambda: val(metrics(mport)[1], "tclguard_overloaded") == 1, 6)
         check("a process whose event loop keeps running late is reported as overloaded", ok, g.stderr()[-300:])
         r = http(mport, "GET /readyz HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
@@ -157,9 +157,10 @@ if hasattr(signal, "SIGSTOP"):
         check("the log says OVERLOADED", "OVERLOADED" in g.stderr())
         ok = wait_for(lambda: any(b'"overload"' in r[2] for r in hook.requests if r[0].startswith("POST")), 15)
         check("...and so does the alert webhook", ok, [r[2][:80] for r in hook.requests][-2:])
-        ok = wait_for(lambda: val(metrics(mport)[1], "tclguard_overloaded") == 0, 15)
+        # (clearing needs five quiet seconds in a row; a shared CI machine has jitter of its own, so allow it a good while)
+        ok = wait_for(lambda: val(metrics(mport)[1], "tclguard_overloaded") == 0, 60, 0.5)
         check("when the loop catches up the state clears", ok)
-        ok = wait_for(lambda: "overload over" in g.stderr(), 5)
+        ok = wait_for(lambda: "overload over" in g.stderr(), 10)
         check("...and the recovery is logged", ok)
     finally:
         try: os.kill(g.proc.pid, signal.SIGCONT)

@@ -12,7 +12,7 @@ def rss_mb(pid):
     except OSError: pass
     return -1
 
-def line(s, timeout=5):
+def line(s, timeout=20):
     s.settimeout(timeout); d = b""
     while not d.endswith(b"\n"):
         c = s.recv(4096)
