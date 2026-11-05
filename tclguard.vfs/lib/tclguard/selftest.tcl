@@ -123,9 +123,12 @@ proc ::tg::selftest::run {{argv {}}} {
     set results {}
     puts "TclGuard self-test: starting a private copy on high ports and attacking it.\nNothing outside this process is changed.\n"
 
-    set dir [file join [expr {[info exists ::env(TMP)] ? $::env(TMP) : "/tmp"}] "tclguard-selftest-[pid]"]
-    if {$::tcl_platform(platform) ne "windows" && ![file isdirectory /tmp]} { set dir [file join [pwd] tclguard-selftest] }
+    # a private directory with an unpredictable name (a fixed or pid-based name in a shared temp folder can be pre-created by someone else)
+    set base [expr {[info exists ::env(TMP)] ? $::env(TMP) : "/tmp"}]
+    if {![file isdirectory $base]} { set base [pwd] }
+    set dir [file join $base "tclguard-selftest-[::tg::randomHex 8]"]
     file mkdir $dir
+    if {$::tcl_platform(platform) ne "windows"} { catch {file attributes $dir -permissions 0700} }
     set hp [freePort]; set tp [freePort]; set up [freePort]
     set hbp [freePort]; set ebp [freePort]; set ubp [freePort]
 

@@ -171,7 +171,8 @@ proc ::tg::joinHostPort {h p} {
 # Strict config-value validators ------------------------------------------------
 
 proc ::tg::isInt {v {min -2147483648} {max 2147483647}} {
-    expr {[string is integer -strict $v] && $v >= $min && $v <= $max}
+    # plain decimal digits only: Tcl's own idea of an integer also accepts 0x10, 0b1, 0o7, leading zeros (octal in expr) and a +
+    expr {[regexp {^-?[0-9]{1,15}$} $v] && $v >= $min && $v <= $max}
 }
 
 proc ::tg::isNum {v {min -1e18} {max 1e18}} {
@@ -688,4 +689,9 @@ proc ::tg::stat::resetForTests {} {
     set series {}
     array unset tk
     set top {}
+}
+
+# 'quoted' PowerShell string. PowerShell also treats the typographic single quotes as quotes.
+proc ::tg::psq {s} {
+    string cat ' [string map [list ' '' \u2018 \u2018\u2018 \u2019 \u2019\u2019 \u201a \u201a\u201a \u201b \u201b\u201b] $s] '
 }

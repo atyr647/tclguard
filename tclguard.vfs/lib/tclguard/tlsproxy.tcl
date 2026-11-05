@@ -19,6 +19,10 @@ namespace eval ::tg::tls {
     variable handshaking 0
     variable hs                       ;# id -> start time (ms) while handshaking
     array set hs {}
+    variable hsIp                     ;# id -> peer address while handshaking
+    array set hsIp {}
+    variable hsPerIp                  ;# peer address -> handshakes in progress
+    array set hsPerIp {}
     variable lastWarn
     array set lastWarn {}
     variable info                     ;# listener name -> cert status dict
@@ -220,14 +224,44 @@ proc ::tg::tls::testLoad {L cert key} {
 
 # Called by tcp::newConn instead of starting the pipeline. Returns 1 if the connection went on
 # to the handshake state, 0 if it was refused (and closed).
+# Take a handshake slot. An address may hold only a few at once (a handshake costs far more CPU than the connection that asks for it, and
+# an attacker with one address could otherwise fill every slot), and the last quarter of the slots is kept for addresses the guard already
+# knows, so a flood from strangers cannot lock returning visitors out of the TLS port.
+proc ::tg::tls::slotFree {ip max perIp} {
+    variable handshaking
+    variable hsPerIp
+    if {[::tg::ban::isAllowed $ip] || [::tg::ip::setMatch proxies $ip]} { return [expr {$handshaking < $max}] }
+    if {[info exists hsPerIp($ip)] && $hsPerIp($ip) >= $perIp} { return 0 }
+    if {$handshaking >= int($max * 0.75) && ![::tg::trust::known $ip]} { return 0 }
+    expr {$handshaking < $max}
+}
+
+proc ::tg::tls::hsEnd {id} {
+    variable handshaking
+    variable hs
+    variable hsIp
+    variable hsPerIp
+    if {![info exists hs($id)]} return
+    unset hs($id)
+    incr handshaking -1
+    if {[info exists hsIp($id)]} {
+        set ip $hsIp($id)
+        unset hsIp($id)
+        if {[info exists hsPerIp($ip)] && [incr hsPerIp($ip) -1] <= 0} { unset hsPerIp($ip) }
+    }
+}
+
 proc ::tg::tls::start {id chan name L} {
     variable handshaking
     variable hs
+    variable hsIp
+    variable hsPerIp
     variable files
     variable chanConn
     variable hsCount
     set max [expr {[dict exists $L tlsMaxHandshaking] ? [dict get $L tlsMaxHandshaking] : 256}]
-    if {$handshaking >= $max} {
+    set perIp [expr {[dict exists $L tlsMaxHandshakingPerIp] ? [dict get $L tlsMaxHandshakingPerIp] : 8}]
+    if {![slotFree $::tg::tcp::cip($id) $max $perIp]} {
         ::tg::stat::incr tlsRefused
         ::tg::tcp::close_ $id "too many TLS handshakes in progress"
         return 0
@@ -240,6 +274,8 @@ proc ::tg::tls::start {id chan name L} {
         return 0
     }
     incr handshaking
+    set hsIp($id) $::tg::tcp::cip($id)
+    if {[incr hsPerIp($hsIp($id))] < 1} { set hsPerIp($hsIp($id)) 1 }
     set chanConn($chan) $id
     set hsCount($chan) 0
     set hs($id) [::tg::now]
@@ -260,8 +296,7 @@ proc ::tg::tls::step {id} {
     }
     if {$r != 1} return                      ;# needs more I/O
     # done
-    unset hs($id)
-    incr handshaking -1
+    hsEnd $id
     ::tg::stat::incr tlsOk
     fileevent $chan readable {}
     set ::tg::tcp::dl($id) 0
@@ -284,7 +319,7 @@ proc ::tg::tls::failed {id msg} {
     variable hs
     set ip $::tg::tcp::cip($id)
     set name $::tg::tcp::cl($id)
-    if {[info exists hs($id)]} { unset hs($id); incr handshaking -1 }
+    hsEnd $id
     ::tg::stat::incr tlsFail
     switch -- [classify $msg] {
         garbage {
@@ -300,7 +335,7 @@ proc ::tg::tls::failed {id msg} {
 proc ::tg::tls::timeout {id} {
     variable handshaking
     variable hs
-    if {[info exists hs($id)]} { unset hs($id); incr handshaking -1 }
+    hsEnd $id
     ::tg::stat::incr tlsFail
     ::tg::ban::strike $::tg::tcp::cip($id) 1 "TLS handshake never completed on $::tg::tcp::cl($id)"
     ::tg::tcp::close_ $id "TLS handshake timeout"
@@ -308,9 +343,7 @@ proc ::tg::tls::timeout {id} {
 
 # Connection closed while handshaking (called from tcp::close_).
 proc ::tg::tls::forget {id} {
-    variable handshaking
-    variable hs
-    if {[info exists hs($id)]} { unset hs($id); incr handshaking -1 }
+    hsEnd $id
 }
 
 # Drop the per-channel bookkeeping when a connection goes away (called from tcp::close_).

@@ -389,9 +389,7 @@ proc ::tg::install::layout {o} {
 # ------------------------------------------------------------------ PowerShell ----
 
 # 'quoted' PowerShell string. PowerShell also treats the typographic single quotes as quotes.
-proc ::tg::install::psq {s} {
-    string cat ' [string map [list ' '' \u2018 \u2018\u2018 \u2019 \u2019\u2019 \u201a \u201a\u201a \u201b \u201b\u201b] $s] '
-}
+proc ::tg::install::psq {s} { ::tg::psq $s }
 
 # UTF-16LE bytes, the encoding -EncodedCommand wants (Tcl 8.6 has no utf-16le encoding).
 proc ::tg::install::utf16le {s} {
@@ -733,9 +731,6 @@ proc ::tg::install::newManifest {L} {
 # The program file itself is only ever touched through ::tg::nfs (see nativefs.tcl): a running starpack is
 # mounted over its own path, so Tcl's file commands would act on the files inside it.
 # 'quoted' PowerShell string. PowerShell also treats the typographic single quotes as quotes.
-proc ::tg::install::psq {s} {
-    string cat ' [string map [list ' '' \u2018 \u2018\u2018 \u2019 \u2019\u2019 \u201a \u201a\u201a \u201b \u201b\u201b] $s] '
-}
 proc ::tg::install::rawCopy {src dst} { if {[catch {::tg::nfs::copy $src $dst} e]} { error "could not copy the program: $e" } }
 proc ::tg::install::rawSame {a b} { ::tg::nfs::same $a $b }
 
@@ -1099,7 +1094,15 @@ proc ::tg::install::removeItem {o it} {
             switch -- [dict get $it backend] {
                 netsh {
                     # "No rules match" is fine: the rule only exists once TclGuard banned something
-                    sh [list netsh advfirewall firewall delete rule name=[dict get $it name]]
+                    # (the rules are numbered when the list of banned addresses is long: "TclGuard Bans", "TclGuard Bans 2", ...)
+                    set base [dict get $it name]
+                    sh [list netsh advfirewall firewall delete rule name=$base]
+                    for {set i 2} {$i <= 500} {incr i} {
+                        set nm "$base $i"
+                        lassign [sh [list netsh advfirewall firewall show rule name=$nm]] rc out
+                        if {$rc != 0 || [string first $nm $out] < 0} break
+                        sh [list netsh advfirewall firewall delete rule name=$nm]
+                    }
                 }
                 nft {
                     if {[have nft]} { sh [list nft delete table inet [dict get $it name]] }
@@ -1108,6 +1111,8 @@ proc ::tg::install::removeItem {o it} {
                     if {[have pfctl]} { sh [list pfctl -a [dict get $it name] -F all] }
                 }
             }
+            # the iptables/ipset fallback backend (Linux without nft) leaves a set and a rule in the raw table
+            if {![isWin] && [have ipset] && [catch {::tg::fw::ipsRemove} e]} { note "Could not remove the iptables rules: $e" }
             return ""
         }
         regkey {

@@ -607,7 +607,7 @@ test inst-win-uninstall-firewall-rule {a system uninstall deletes the Windows Fi
 } -body {
     set e [::tg::install::uninstall {scope system keepData yes}]
     list $e [cmdsMatching {netsh *}]
-} -result {{} {{netsh advfirewall firewall delete rule {name=TclGuard Bans}}}}
+} -result {{} {{netsh advfirewall firewall delete rule {name=TclGuard Bans}} {netsh advfirewall firewall show rule {name=TclGuard Bans 2}}}}
 
 test inst-win-uninstall-reg-guard {only uninstall entries can be removed from the registry through the record} -constraints unix -setup {
     set d [winSandbox]

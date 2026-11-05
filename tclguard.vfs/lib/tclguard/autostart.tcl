@@ -181,7 +181,7 @@ proc ::tg::autostart::relaunchAsAdmin {} {
         windows {
             set exe [lindex $cmd 0]
             set rest [lrange $cmd 1 end]
-            set ps "Start-Process -FilePath '[string map {' ''} $exe]' -ArgumentList '[string map {' ''} [join [lmap a $rest {quoteWin $a}] { }]]' -Verb RunAs"
+            set ps "Start-Process -FilePath [::tg::psq $exe] -ArgumentList [::tg::psq [join [lmap a $rest {quoteWin $a}] { }]] -Verb RunAs"
             lassign [run [list powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command $ps]] rc out
             if {$rc != 0} {
                 if {[declined $out]} { return "Windows did not get your permission, so TclGuard keeps running without administrator rights." }

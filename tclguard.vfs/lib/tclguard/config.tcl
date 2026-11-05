@@ -87,6 +87,7 @@ namespace eval ::tg::cfg {
         tlsCiphers ""
         tlsHandshakeTimeout 10
         tlsMaxHandshaking 256
+        tlsMaxHandshakingPerIp 8
         acme 0
         acmeEmail ""
         acmeDirectory ""
@@ -127,6 +128,7 @@ namespace eval ::tg::cfg {
         tlsCiphers ""
         tlsHandshakeTimeout 10
         tlsMaxHandshaking 256
+        tlsMaxHandshakingPerIp 8
         acme 0
         acmeEmail ""
         acmeDirectory ""
@@ -524,7 +526,7 @@ proc ::tg::cfg::validate {cfg} {
             if {[dict get $L tlsMinVersion] ni {1.2 1.3}} { lappend errs "$p: tlsMinVersion must be 1.2 or 1.3" }
             if {[dict get $L tlsCert] ne "" && [dict get $L tlsKey] eq ""} { lappend errs "$p: tlsCert needs tlsKey too" }
             if {[dict get $L tlsCert] eq "" && [dict get $L tlsKey] ne ""} { lappend errs "$p: tlsKey needs tlsCert too" }
-            foreach k {tlsHandshakeTimeout tlsMaxHandshaking} {
+            foreach k {tlsHandshakeTimeout tlsMaxHandshaking tlsMaxHandshakingPerIp} {
                 if {![::tg::isInt [dict get $L $k] 1 1000000]} { lappend errs "$p: $k must be a positive whole number" }
             }
             if {[::tg::bool [dict get $L acme]]} {
@@ -812,14 +814,17 @@ proc ::tg::cfg::handBack {{force 0}} {
     set dir [file dirname [file normalize $path]]
     if {[catch {file stat $dir st}] || $st(uid) == 0} return
     set owner $st(uid); set group $st(gid)
+    # Only the few files this program itself creates, never a directory walk and never a link: root changing the owner of whatever a
+    # user-owned folder happens to contain would let that user point a link at any file on the machine. `chown -h` does not follow a link
+    # even if one appears between the check and the change.
     set n 0
-    set walk {}
-    lappend walk [file normalize $path] [stateDir]
-    while {[llength $walk]} {
-        set f [lindex $walk 0]; set walk [lrange $walk 1 end]
-        if {[catch {file lstat $f fs}] || $fs(type) eq "link"} continue
-        if {$fs(uid) == 0} { if {![catch {file attributes $f -owner $owner -group $group}]} { incr n } }
-        if {$fs(type) eq "directory"} { foreach c [glob -nocomplain -directory $f -- * .*] { if {[file tail $c] ni {. ..}} { lappend walk $c } } }
+    set sd [stateDir]
+    set list [list [file normalize $path] $sd [file join $sd certs] [file join $sd acme] [file join $sd cacert.pem] [file join $sd bans.db] [file join $sd trusted.db] [file join $sd tclguard.log] [file join $sd update-state.json]]
+    # (the files directly inside the certificate and ACME folders: the keys and certificates this program wrote)
+    foreach sub {certs acme} { foreach f [glob -nocomplain -directory [file join $sd $sub] -types f -- *] { lappend list $f } }
+    foreach f $list {
+        if {[catch {file lstat $f fs}] || $fs(type) ni {file directory} || $fs(uid) != 0} continue
+        if {![catch {exec chown -h $owner:$group $f}]} { incr n }
     }
     return $n
 }

@@ -27,6 +27,8 @@ proc ::tg::nfs::ps {script} {
 
 proc ::tg::nfs::copy {src dst} {
     if {[win]} { ps "Copy-Item -LiteralPath [q $src] -Destination [q $dst] -Force"; return }
+    # remove first: `cp` onto a name that is already a link would write through the link
+    catch {exec rm -f -- $dst 2>@1}
     if {[catch {exec cp -- $src $dst 2>@1} out]} { error [string trim $out] }
 }
 

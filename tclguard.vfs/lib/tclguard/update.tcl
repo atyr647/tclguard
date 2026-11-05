@@ -771,6 +771,7 @@ proc ::tg::update::applyInner {opts} {
     try {
         # 3. download with the size announced in the SIGNED manifest as hard limit
         progress $prog download 0 $size
+        catch { file delete -force -- $tmp }      ;# never write through a pre-existing file or link of that name
         fetch [dict get $f url] -file $tmp -maxbytes $size -timeout 600000 -progress [list ::tg::update::progress $prog]
         if {![file exists $tmp] || [file size $tmp] != $size} {
             error "the download is incomplete ([expr {[file exists $tmp] ? [file size $tmp] : 0}] of $size bytes)"
@@ -785,7 +786,8 @@ proc ::tg::update::applyInner {opts} {
         if {!$ok} { error "the new program does not run on this machine ($text); the old one was kept" }
         set got [versionOf $text]
         if {$got ne $new} { error "the new program reports version '$got' instead of $new; the old one was kept" }
-        # 6. swap
+        # 6. swap (the bytes are checked once more: the file has been sitting next to the program while it was being run)
+        if {[sha256File $tmp] ne [dict get $f sha256]} { error "the downloaded file changed while it was being checked; it was discarded" }
         progress $prog install 0 0
         set deferred [swapIn $tmp $target]
         set done 1

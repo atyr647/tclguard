@@ -55,7 +55,10 @@ proc ::tg::logw::feedLine {name line} {
 
 proc ::tg::logw::poll {t} {
     variable w; variable pos; variable ino; variable carry; variable err
+    # a poll never takes long, however big the logs are: 1 MB per file, and no new file after 250 ms (the rest wait for the next poll)
+    set t0 [clock milliseconds]
     foreach name [array names w] {
+        if {[clock milliseconds] - $t0 > 250} break
         set path [dict get $w($name) file]
         if {[catch {file stat $path st}]} {
             if {![info exists err($name)]} {
@@ -74,19 +77,26 @@ proc ::tg::logw::poll {t} {
             set pos($name) 0; set ino($name) $st(ino); set carry($name) ""   ;# rotated/truncated
         }
         if {$st(size) == $pos($name)} continue
+        set data ""
         if {[catch {
             set fh [open $path r]
-            fconfigure $fh -encoding binary -translation binary
-            seek $fh $pos($name)
-            set data [read $fh 1048576]
-            close $fh
+            try {
+                fconfigure $fh -encoding binary -translation binary
+                seek $fh $pos($name)
+                set data [read $fh 1048576]
+            } finally {
+                catch {close $fh}
+            }
         }]} continue
         # offsets are bytes; decode per line so invalid UTF-8 can never shift them
         incr pos($name) [string length $data]
-        set text "$carry($name)$data"
-        set lines [split $text \n]
-        set carry($name) [lindex $lines end]
+        set lines [split "$carry($name)$data" \n]
+        # an unfinished last line is kept for the next poll, but not without limit (a file with no line breaks must not grow this)
+        set last [lindex $lines end]
+        set carry($name) [expr {[string length $last] > 65536 ? "" : $last}]
         foreach line [lrange $lines 0 end-1] {
+            # a line is judged by its first 4 KB: the pattern is the user's, and matching it against megabytes of one line is not worth it
+            if {[string length $line] > 4096} { set line [string range $line 0 4095] }
             feedLine $name [encoding convertfrom utf-8 [string trimright $line \r]]
         }
     }
