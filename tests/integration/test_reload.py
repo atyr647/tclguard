@@ -18,13 +18,14 @@ def raw(g, cmd, token=None):
     import hmac as _h, hashlib as _hl
     tok = (token or g.token).encode(); cn = "ef" * 12
     s = socket.create_connection(("127.0.0.1", g.ctlport), 5); s.settimeout(8)
-    def rl():
-        d = b""
-        while not d.endswith(b"\n"):
+    buf = [b""]
+    def rl():      # exactly one line (replies can arrive coalesced in one segment)
+        while b"\n" not in buf[0]:
             c = s.recv(4096)
             if not c: break
-            d += c
-        return d.decode().strip()
+            buf[0] += c
+        ln, _, buf[0] = buf[0].partition(b"\n")
+        return ln.decode().strip()
     s.sendall(f"HELLO {cn}\n".encode()); m = re.match(r"CHALLENGE ([0-9a-f]+) ([0-9a-f]{64})", rl()); sn = m.group(1)
     s.sendall(f"PROOF {_h.new(tok, f'C:{cn}:{sn}'.encode(), _hl.sha256).hexdigest()}\n{cmd}\n".encode())
     a = rl(); b = rl(); s.close()
