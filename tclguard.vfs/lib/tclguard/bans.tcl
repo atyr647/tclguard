@@ -314,6 +314,9 @@ proc ::tg::ban::load {} {
     set restored {}
     if {[catch {
         set d [::tg::readFile $file]
+        # (`dict exists` answers 0 for text that is not a dictionary at all, which would make a damaged file look like an empty one)
+        dict size $d
+        if {![dict exists $d banned] && ![dict exists $d hist] && [string trim $d] ne ""} { error "the file does not look like a TclGuard ban list" }
         set t [::tg::now]
         if {[dict exists $d banned]} {
             dict for {k info} [dict get $d banned] {

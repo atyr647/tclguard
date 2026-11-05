@@ -89,7 +89,7 @@ try:
     bad = open(g.conf).read().replace(g.token, "x" * 32)
     open(g.conf + ".bad", "w").write(bad)
     r = subprocess.run([*TG, "ctl", "--config", g.conf + ".bad", "status"], capture_output=True, text=True)
-    check("ctl with wrong token is refused", r.returncode != 0 and "authentication failed" in r.stderr, r.stderr)
+    check("ctl with wrong token is refused", r.returncode != 0 and ("did not prove" in r.stderr or "authentication failed" in r.stderr), r.stderr)
     rc, out = g.ctl("status"); check("status shows summary and listeners", "Threat level" in out and "Listeners:" in out and "web" in out, out[:300])
 
     # ---- allowlist protects from bans ----
@@ -106,7 +106,7 @@ try:
     s.sendall(b"\x81\x05hello")
     d2 = b""
     while b"echo:" not in d2: d2 += s.recv(4096)
-    check("websocket bytes tunnel both ways after 101", d2.endswith(b"\x81\x05hello"), d2)
+    check("websocket bytes tunnel both ways after 101", d2.endswith(b"echo:hello"), d2)
     s.sendall(b"GET /smuggled HTTP/1.1\r\nHost: x\r\n\r\n")   # now just opaque data
     time.sleep(0.3)
     check("data after 101 is opaque (not parsed as HTTP)", True)

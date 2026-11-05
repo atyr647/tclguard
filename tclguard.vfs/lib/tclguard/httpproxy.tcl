@@ -398,6 +398,11 @@ proc ::tg::http::parseHead {id block} {
     if {$upgrade && "upgrade" in $connTokens && ([llength $upgv] != 1 || [lindex $upgv 0] ne "websocket")} {
         return {err 400 "only Upgrade: websocket is supported"}
     }
+    # (an Upgrade header without the Connection: Upgrade token is no upgrade request for us but could be one for a lenient backend: the two
+    # sides would disagree about what the connection carries)
+    if {$upgrade && "upgrade" ni $connTokens} {
+        return {err 400 "Upgrade without Connection: Upgrade"}
+    }
     # ---- message framing (the part that must agree with the backend) ----
     set framing none; set clen 0
     if {[llength $te]} {

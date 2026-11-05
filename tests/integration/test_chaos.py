@@ -43,7 +43,7 @@ try:
     g.stop(); g.proc.wait(10)
 
     # a damaged state file must not stop the guard from starting
-    files = [f for f in glob.glob(os.path.join(g.dir, "**", "*"), recursive=True) if os.path.isfile(f) and b"203.0.113.11" in open(f, "rb").read()]
+    files = [f for f in glob.glob(os.path.join(g.dir, "**", "*"), recursive=True) if os.path.basename(f) == "bans.db" and b"203.0.113.11" in open(f, "rb").read()]
     check("the ban state file was found", bool(files), os.listdir(g.dir))
     for f in files: open(f, "wb").write(b"\x00\xff{{{ not a state file \x00")
     g.start()

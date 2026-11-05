@@ -73,7 +73,9 @@ try:
     leaks = {k: v for k, v in after.items() if k in ("tcpConns", "tcpPerIp", "httpState", "httpBuf", "udpSessions", "udpPerIp") and v != 0}
     check("all per-connection state drained after abuse (no leaked connection records)", not leaks, leaks)
     check("open channels return to baseline", after["openChannels"] <= base["openChannels"] + 2, (base["openChannels"], after["openChannels"]))
-    check("memory is stable: round 3 adds < 5 MB over round 1 (no leak, only the allocator high-water mark)", rssC - rssA < 5, f"{rssA:.1f} -> {rssB:.1f} -> {rssC:.1f} MB")
+    # (how high the first round pushes the allocator depends on thread timing, so round 1 is only a sanity bound; the leak signal is the growth
+    # between two rounds that are both past the warm-up)
+    check("memory is stable: round 3 adds < 3 MB over round 2 and < 15 MB over round 1 (no leak, only the allocator high-water mark)", rssC - rssB < 3 and rssC - rssA < 15, f"{rssA:.1f} -> {rssB:.1f} -> {rssC:.1f} MB")
     # and it still serves normally
     r = get("/ok", port=hp, timeout=5)
     check("still serves normal traffic after the abuse", status(r) == 200, r[:50])
