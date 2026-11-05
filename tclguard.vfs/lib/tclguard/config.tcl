@@ -638,6 +638,14 @@ proc ::tg::cfg::parseText {text} {
     foreach k [dict keys $d] {
         if {$k ni {general listeners watchers}} { error "unknown top-level section '$k' (expected general, listeners, watchers)" }
     }
+    # every listener and watcher is itself a list of name/value pairs: an odd number of words (a setting left without its value) would
+    # otherwise surface later as an obscure error from deep inside
+    foreach sect {listeners watchers} {
+        if {![dict exists $d $sect]} continue
+        dict for {n spec} [dict get $d $sect] {
+            if {[catch {dict size $spec}]} { error "$sect entry '$n' is malformed: every setting needs a value" }
+        }
+    }
     variable generalDefaults
     set out [dict create general $generalDefaults listeners {} watchers {}]
     if {[dict exists $d general]}   { dict set out general   [dict merge $generalDefaults [dict get $d general]] }

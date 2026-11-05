@@ -1,0 +1,56 @@
+name: scheduled-fuzz-and-soak
+# Long-running checks that are too slow for every push: hours of fuzzing and a soak under repeated abuse, once a week (and on demand).
+on:
+  schedule:
+    - cron: "17 3 * * 0"
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "minutes of fuzzing per job"
+        default: "30"
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tcl8.6 tcllib tcl-udp tcl-tls tcl-thread tcl-vfs python3
+      - name: HTTP parser fuzzer, live (real sockets, all variants)
+        run: python3 -u tests/fuzz/fuzz.py live --seconds $(( ${{ github.event.inputs.minutes || 30 }} * 60 / 2 )) --seed ${{ github.run_number }} --variant default,noxff,trusted,challenge
+      - name: HTTP parser fuzzer, in process (millions of cheap cases)
+        run: python3 -u tests/fuzz/fuzz.py inproc --seconds $(( ${{ github.event.inputs.minutes || 30 }} * 60 / 4 )) --seed ${{ github.run_number }}
+      - name: Other parsers (addresses, X-Forwarded-For, paths, JSON, configuration, manifests)
+        run: |
+          for i in 1 2 3 4 5 6; do
+            tclsh8.6 tests/fuzz/misc_fuzz.tcl $(( ${{ github.event.inputs.minutes || 30 }} * 60 / 24 )) $(( ${{ github.run_number }} * 10 + i )) || exit 1
+          done
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-findings
+          path: tests/fuzz/out/
+
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tcl8.6 tcllib tcl-udp tcl-tls tcl-thread tcl-vfs python3
+      - name: Abuse the guard over and over; every table must drain and memory must plateau
+        run: |
+          cd tests/integration
+          for i in 1 2 3 4 5 6; do python3 -u test_leaks.py || exit 1; done
+      - name: Chaos (kill -9, damaged state, flapping backend, disconnect storms) repeated
+        run: |
+          cd tests/integration
+          for i in 1 2 3 4 5; do python3 -u test_chaos.py || exit 1; done

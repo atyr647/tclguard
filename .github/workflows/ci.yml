@@ -36,6 +36,28 @@ jobs:
       - name: HTTP parser fuzzer (deterministic smoke run with smuggling, liveness and CPU oracles)
         if: ${{ !cancelled() }}
         run: python3 -u tests/fuzz/fuzz.py ci
+      - name: Fuzzer for the other parsers (addresses, X-Forwarded-For, paths, JSON, configuration, manifests)
+        if: ${{ !cancelled() }}
+        run: for s in 1 2 3; do tclsh8.6 tests/fuzz/misc_fuzz.tcl 20 $s || exit 1; done
+      - name: Hardening tests (audit regressions, control port, reload, operations, chaos)
+        if: ${{ !cancelled() }}
+        run: cd tests/integration && python3 -u test_audit_fixes.py && python3 -u test_control.py && python3 -u test_reload.py && python3 -u test_ops.py && python3 -u test_chaos.py
+      - name: Leak check after abuse (tables drain, memory plateaus)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 8
+        run: cd tests/integration && python3 -u test_leaks.py
+      - uses: actions/setup-node@v4
+        if: ${{ !cancelled() }}
+        with:
+          node-version: 22
+      - name: Real browser (Chromium) through the guard - page, keep-alive, WebSocket, upload, challenge, HTTPS
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: |
+          cd tests/integration
+          npm init -y >/dev/null && npm i playwright@1.49.1 >/dev/null
+          npx playwright install --with-deps chromium >/dev/null
+          python3 -u test_browser.py
       - name: IPv6 end to end (listeners, backends, PROXY protocol, UDP, per-/64 bans)
         if: ${{ !cancelled() }}
         run: cd tests/integration && sudo -E env "PATH=$PATH" python3 -u test_ipv6.py
@@ -164,6 +186,17 @@ jobs:
           Push-Location tests\integration
           python -u test_http.py
           python -u test_features.py
+          Pop-Location
+      - name: Hardening tests against the starpack (audit regressions, control port, reload, operations, chaos)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15
+        run: |
+          $env:TG_CMD = (Resolve-Path .\releases\tclguard-windows-x86_64-console.exe).Path
+          Push-Location tests\integration
+          foreach ($t in 'test_audit_fixes','test_control','test_reload','test_ops','test_chaos') {
+            python -u "$t.py"
+            if ($LASTEXITCODE -ne 0) { throw "$t failed" }
+          }
           Pop-Location
       - name: Keep-alive stress (the Windows runtime has a patched socket driver; 1,500 sessions each of plain and TLS must not stall)
         if: ${{ !cancelled() }}
@@ -301,6 +334,11 @@ jobs:
         run: |
           export TG_CMD="$TCLSH $PWD/tclguard.vfs/main.tcl"
           cd tests/integration && python3 -u test_http.py && python3 -u test_features.py
+      - name: Hardening tests (audit regressions, control port, reload, operations, chaos)
+        if: ${{ !cancelled() }}
+        run: |
+          export TG_CMD="$TCLSH $PWD/tclguard.vfs/main.tcl"
+          cd tests/integration && python3 -u test_audit_fixes.py && python3 -u test_control.py && python3 -u test_reload.py && python3 -u test_ops.py && python3 -u test_chaos.py
       - name: IPv6 end to end
         if: ${{ !cancelled() }}
         run: |
@@ -342,6 +380,7 @@ jobs:
           export TG_CMD="$PWD/releases/tclguard-macos-arm64"
           cd tests/integration
           python3 -u test_http.py && python3 -u test_features.py && python3 -u test_tls.py && python3 -u test_ipv6.py
+          python3 -u test_audit_fixes.py && python3 -u test_control.py && python3 -u test_reload.py && python3 -u test_ops.py && python3 -u test_chaos.py
           python3 -u test_fdlimit.py && python3 -u test_reserve.py
           export PATH="$(brew --prefix openssl@3)/bin:$PATH"
           python3 -u test_update_starpack.py
@@ -415,6 +454,7 @@ jobs:
           export TG_CMD="$PWD/releases/tclguard-macos-x86_64"
           cd tests/integration
           python3 -u test_http.py && python3 -u test_features.py && python3 -u test_tls.py && python3 -u test_ipv6.py
+          python3 -u test_audit_fixes.py && python3 -u test_control.py && python3 -u test_reload.py && python3 -u test_ops.py && python3 -u test_chaos.py
           python3 -u test_fdlimit.py && python3 -u test_reserve.py
           export PATH="$(brew --prefix openssl@3)/bin:$PATH"
           python3 -u test_update_starpack.py

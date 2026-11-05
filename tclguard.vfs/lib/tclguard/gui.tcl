@@ -1327,6 +1327,10 @@ proc ::tg::gui::settingsSpec {} {
         {linkMbps "Your download speed (Mbit/s)" int "Used to judge how full your connection is."}
         {levelCalmSec "Calm seconds before relaxing" int "How long traffic must stay normal before the level drops one step."}
         {learnTrusted "Remember well-behaved visitors" bool "Addresses with long, healthy sessions are remembered for lockdown mode."}}} \
+      {{Monitoring and alerts} {For running it unattended. Alerts are sent to a web address you choose (Slack, Discord, ntfy, your own service).} {
+        {dryRun "Dry run (log bans, do not apply them)" bool "Watch what TclGuard would block on your real traffic before trusting it. Bans you make by hand still work."}
+        {alertUrl "Alert web address" text "Called when the threat level rises or the guard is overloaded. Leave empty for none. Test it with: tclguard ctl alert test"}
+        {metricsEnable "Health and metrics endpoint" bool "Serves /healthz and Prometheus /metrics on this computer only (port in the configuration file)."}}} \
       {{Logging and control} {} {
         {logLevel "Log detail" choice "debug is very chatty." {debug info warn alert}}
         {controlEnable "Allow command-line control" bool "Lets 'tclguard ctl ...' manage this running instance (this computer only)."}}}
