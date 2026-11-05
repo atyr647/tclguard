@@ -34,6 +34,10 @@ watchers  { name { ...log watcher... } ... }
 | `linkMbps` | 100 | Your download speed, used for link saturation. |
 | `watchPorts` | empty | TCP ports served *directly* (not proxied) to watch for floods via `/proc`/`netstat`. |
 | `controlEnable`, `controlHost`, `controlPort`, `controlToken` | 1, 127.0.0.1, 9737, generated | Local management socket used by `tclguard ctl`. |
+| `dryRun` | 0 | Automatic bans are only logged (`DRY RUN: would ban ...`), nothing is blocked. Bans made by hand still work. Also `tclguard --dry-run`. |
+| `alertUrl`, `alertFormat`, `alertCooldown` | empty, `json`, 300 | Webhook for the threat level rising, overload and recovery (`http://` only for local addresses). `text` sends a plain body (ntfy). At most one alert per kind per cool-down, 30 an hour. Test: `tclguard ctl alert test`. |
+| `satLagMs` | 250 | Overload threshold: how late (ms) the event loop may run in at least 3 of 5 seconds before the guard reports itself overloaded. |
+| `metricsEnable`, `metricsHost`, `metricsPort`, `metricsToken` | 0, 127.0.0.1, 9738, empty | `/healthz`, `/readyz`, Prometheus `/metrics`. Off by default; a token (16+ characters) is required to be set when it is reachable from the network, and is checked as `Authorization: Bearer`. |
 
 ## listeners
 
@@ -48,7 +52,7 @@ tcp only: `firstByteTimeout`.
 
 All per-address limits are multiplied by the current threat-level factor (never below 1).
 
-**HTTPS (tcp / http listeners):** `tls` (`yes`/`no`), `tlsCert` + `tlsKey` (your own PEM files; leave both empty to use a managed certificate in `<state>/certs/<listener>.pem`), `tlsNames` (DNS names / addresses for the managed self-signed certificate and for ACME), `tlsMinVersion` (`1.2` or `1.3`), `tlsCiphers` (OpenSSL cipher string for TLS 1.2; default is ECDHE + AES-GCM/ChaCha20), `tlsHandshakeTimeout` (seconds, default 10), `tlsMaxHandshaking` (cap on unfinished handshakes across the guard, default 256). **Automatic certificates:** `acme` (`yes`/`no`), `acmeEmail`, `acmeDirectory` (default Let's Encrypt production; the staging URL is `https://acme-staging-v02.api.letsencrypt.org/directory`), `acmeCaFile` (trust file for a private ACME server, normally empty). **Redirect (http listeners):** `redirectHttps` + `redirectPort` send plain-HTTP visitors to the https:// address. See [TLS.md](TLS.md).
+**HTTPS (tcp / http listeners):** `tls` (`yes`/`no`), `tlsCert` + `tlsKey` (your own PEM files; leave both empty to use a managed certificate in `<state>/certs/<listener>.pem`), `tlsNames` (DNS names / addresses for the managed self-signed certificate and for ACME), `tlsMinVersion` (`1.2` or `1.3`), `tlsCiphers` (OpenSSL cipher string for TLS 1.2; default is ECDHE + AES-GCM/ChaCha20), `tlsHandshakeTimeout` (seconds, default 10), `tlsMaxHandshaking` (cap on unfinished handshakes across the guard, default 256; the last quarter is kept for addresses the guard already knows), `tlsMaxHandshakingPerIp` (unfinished handshakes one address may hold, default 8). **Automatic certificates:** `acme` (`yes`/`no`), `acmeEmail`, `acmeDirectory` (default Let's Encrypt production; the staging URL is `https://acme-staging-v02.api.letsencrypt.org/directory`), `acmeCaFile` (trust file for a private ACME server, normally empty). **Redirect (http listeners):** `redirectHttps` + `redirectPort` send plain-HTTP visitors to the https:// address. See [TLS.md](TLS.md).
 
 ## watchers
 

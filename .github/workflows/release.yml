@@ -27,14 +27,17 @@ on:
 
 permissions:
   contents: write
+  id-token: write        # build provenance attestations (sigstore)
+  attestations: write
 
 jobs:
   release:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
       GH_TOKEN: ${{ github.token }}
+      # (the signing key is NOT here: it is handed only to the one step that signs, so no other step - including any third-party action
+      # or script run in this job - can read it)
     steps:
       - uses: actions/checkout@v4
         with:
@@ -57,8 +60,10 @@ jobs:
 
       - name: Is the signing key available?
         id: key
+        env:
+          HAVE_KEY: ${{ secrets.RELEASE_SIGNING_KEY != '' && 'yes' || '' }}
         run: |
-          if [ -z "$RELEASE_SIGNING_KEY" ]; then
+          if [ -z "$HAVE_KEY" ]; then
             echo "present=no" >> "$GITHUB_OUTPUT"
             echo "::warning::RELEASE_SIGNING_KEY is not set: nothing was signed or published."
             {
@@ -98,6 +103,8 @@ jobs:
 
       - name: Build and sign the manifest
         if: steps.key.outputs.present == 'yes'
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
         run: |
           mkdir -p dist
           cp releases/tclguard-* dist/
@@ -109,6 +116,13 @@ jobs:
             --notes-file notes.txt --require-embedded-key --urlbase "https://github.com/${{ github.repository }}/releases/download/${{ steps.ver.outputs.tag }}/"
           ls -l dist
           cat dist/manifest.json
+
+      - name: Attest where the files came from (GitHub build provenance, verifiable with `gh attestation verify`)
+        if: steps.key.outputs.present == 'yes'
+        continue-on-error: true       # needs a public repository or a plan that includes attestations
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*
 
       - name: Create the GitHub Release
         if: steps.key.outputs.present == 'yes'

@@ -38,7 +38,7 @@ tcltls 2.x checks the host name itself, so its message for a wrong name reads "c
 ## What it protects against, specifically
 
 * **No handshake work for bad guys.** Banned, blocklisted and rate-limited addresses are refused *before* any TLS work is done.
-* **Handshake limits.** At most `tlsMaxHandshaking` (default 256) unfinished handshakes at once, each with a `tlsHandshakeTimeout` (default 10 s); silent clients are cut off and earn a strike.
+* **Handshake limits.** At most `tlsMaxHandshaking` (default 256) unfinished handshakes at once (the last quarter of them reserved for addresses the guard already knows, so a flood from strangers cannot lock returning visitors out), at most `tlsMaxHandshakingPerIp` (default 8) per address, each with a `tlsHandshakeTimeout` (default 10 s); silent clients are cut off and earn a strike.
 * **Garbage is punished, rejection is not.** A client that sends non-TLS bytes earns strikes; a client that merely rejects your certificate (self-signed, name mismatch) does not.
 * **Renegotiation.** TLS 1.2 client-initiated renegotiation (a classic way to burn server CPU from one connection) is detected and the connection is dropped with a strike. TLS 1.3 has no renegotiation. Verified against the starpack's OpenSSL.
 * **Protocols.** TLS 1.2 and 1.3 only (`tlsMinVersion 1.3` for modern clients only); SSLv3, TLS 1.0 and 1.1 are refused.

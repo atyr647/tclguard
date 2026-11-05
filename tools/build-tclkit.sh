@@ -26,7 +26,14 @@ ncpu() { nproc 2>/dev/null || sysctl -n hw.ncpu; }
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 work=${WORK:-$PWD/.tclkit-build-$target}
 mkdir -p "$work" && cd "$work"
-[ -d kc ] || { curl -fsSL -o kc.tar.gz "https://kitcreator.rkeene.org/fossil/tarball/kitcreator.tar.gz?uuid=trunk"
+# KitCreator itself is pinned to one check-in (not "trunk") and its tarball hash is verified: whoever controls that server cannot change
+# what gets built without the hash here failing. KitCreator in turn pins the Tcl, Tk, Itcl, Metakit and tcludp sources it downloads by
+# SHA-256 (see the build.sh in each of its package folders). To move to a newer KitCreator: pick a check-in, download its tarball, read
+# the diff of the package build scripts, then update both lines.
+KITCREATOR_UUID=97a1e6339fc8869c531d268408d824547961cb0a      # "Upgrade to Tcl/Tk 8.6.14", 2024-05-21
+KITCREATOR_SHA256=725d38479f6823a69b7c6043784544c7705a04387c5b15549e2c1e4ba96a52da
+[ -d kc ] || { curl -fsSL -o kc.tar.gz "https://kitcreator.rkeene.org/fossil/tarball/kitcreator.tar.gz?uuid=$KITCREATOR_UUID"
+               echo "$KITCREATOR_SHA256  kc.tar.gz" | sha256check
                mkdir kc && tar xzf kc.tar.gz -C kc --strip-components=1; }
 cd kc
 # KitCreator pins tcltls 1.7.19 (+ LibreSSL 2.9.0). Use tcltls 1.7.22 with a current OpenSSL LTS that we build
