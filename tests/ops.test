@@ -1,0 +1,82 @@
+# Unit tests for ops.tcl: alert rate limits and bodies, the health/metrics request handler, configuration checks, dry-run bans.
+source [file join [file dirname [info script]] helpers.tcl]
+loadmods util config json bans limiter tcpproxy httpproxy control engine ops
+set ::tg::log::stderr 0
+
+proc setG {k v} { dict set ::tg::cfg::current general $k $v }
+proc unsetG {k} { set ::tg::cfg::current [dict remove $::tg::cfg::current general $k] }
+proc sent {} { set ::tg::ops::alertCalls }
+# capture instead of spawning helpers
+set ::tg::ops::alertCalls {}
+rename ::tg::ops::deliver ::tg::ops::deliverReal
+proc ::tg::ops::deliver {url kind text} { lappend ::tg::ops::alertCalls [list $kind $text] }
+
+test alert-needs-a-url {} -body {
+    set ::tg::ops::alertCalls {}
+    ::tg::ops::alert x "hello"; update
+    sent
+} -result {}
+test alert-cooldown-per-kind {} -setup {
+    setG alertUrl https://example.invalid/hook; setG alertCooldown 600
+    array unset ::tg::ops::alertAt; set ::tg::ops::alertLog {}; set ::tg::ops::alertCalls {}; set ::tg::ops::alertsSuppressed 0
+} -body {
+    ::tg::ops::alert a one; ::tg::ops::alert a two; ::tg::ops::alert b three; update
+    list [lmap c [sent] {lindex $c 0}] $::tg::ops::alertsSuppressed
+} -result {{a b} 1}
+test alert-hourly-cap {} -setup {
+    setG alertUrl https://example.invalid/hook; setG alertCooldown 10
+    array unset ::tg::ops::alertAt; set ::tg::ops::alertLog {}; set ::tg::ops::alertCalls {}; set ::tg::ops::alertsSuppressed 0
+} -body {
+    for {set i 0} {$i < 40} {incr i} { ::tg::ops::alert k$i m }
+    update
+    list [llength [sent]] $::tg::ops::alertsSuppressed
+} -result {30 10}
+test alert-body-json-has-the-keys-chat-services-read {} -setup { setG alertFormat json } -body {
+    set j [::tg::json::parse [::tg::ops::alertBody level-up {a "quoted" line}]]
+    list [dict get $j event] [dict get $j message] [string match {TclGuard on *: a "quoted" line} [dict get $j text]] [expr {[dict get $j content] eq [dict get $j text]}]
+} -result {level-up {a "quoted" line} 1 1}
+test alert-body-plain-text {} -setup { setG alertFormat text } -body {
+    string match {TclGuard on *: disk is on fire} [::tg::ops::alertBody x {disk is on fire}]
+} -cleanup { setG alertFormat json } -result 1
+
+# ---- the request handler
+proc req {line args} { ::tg::ops::mhandle [join [list $line {*}$args "" ""] "\r\n"] }
+test metrics-get-only {} -body { regexp {^HTTP/1.1 405} [req "DELETE /metrics HTTP/1.1" "Host: x"] } -result 1
+test metrics-unknown-path {} -body { regexp {^HTTP/1.1 404} [req "GET /etc/passwd HTTP/1.1" "Host: x"] } -result 1
+test metrics-garbage-request-line {} -body { regexp {^HTTP/1.1 405} [req "GET\x00/metrics HTTP/1.1"] } -result 1
+test metrics-token-required-and-compared {} -setup { setG metricsToken [string repeat t 20] } -body {
+    list [regexp {^HTTP/1.1 401} [req "GET /healthz HTTP/1.1" "Host: x"]] \
+         [regexp {^HTTP/1.1 401} [req "GET /healthz HTTP/1.1" "Authorization: Bearer nope"]] \
+         [regexp {^HTTP/1.1 (200|503)} [req "GET /healthz HTTP/1.1" "authorization: Bearer [string repeat t 20]"]]
+} -cleanup { setG metricsToken "" } -result {1 1 1}
+test metrics-head-has-no-body {} -body {
+    set r [req "HEAD /healthz HTTP/1.1" "Host: x"]
+    expr {[string first "\r\n\r\n" $r] == [string length $r] - 4}
+} -result 1
+test metrics-label-escaping {} -body { ::tg::ops::esc "a\"b\\c\nd" } -result {a\"b\\c\nd}
+
+# ---- configuration
+test config-ops-defaults-are-valid {} -body {
+    lassign [::tg::cfg::validate {}] e w
+    list $e
+} -result {{}}
+test config-ops-bad-values-are-refused {} -body {
+    lassign [::tg::cfg::validate [dict create general {metricsPort 0 alertUrl ftp://x alertFormat xml metricsToken short metricsHost not-an-ip satLagMs 1}]] e w
+    llength $e
+} -result 6
+test config-dryrun-warns {} -body {
+    lassign [::tg::cfg::validate [dict create general {dryRun 1}]] e w
+    expr {[lsearch -glob $w "dryRun is on*"] >= 0}
+} -result 1
+
+# ---- dry run
+test dryrun-does-not-ban-automatically {} -setup { ::tg::ban::configure; setG dryRun 1 } -body {
+    set a [::tg::ban::add 8.8.4.4 test "" auto]
+    list $a [::tg::ban::check 8.8.4.4]
+} -cleanup { setG dryRun 0 } -result {0 0}
+test dryrun-still-applies-manual-bans {} -setup { setG dryRun 1 } -body {
+    ::tg::ban::add 8.8.8.9 test 60 manual
+    ::tg::ban::check 8.8.8.9
+} -cleanup { setG dryRun 0; ::tg::ban::clearAll } -result 1
+
+cleanupTests

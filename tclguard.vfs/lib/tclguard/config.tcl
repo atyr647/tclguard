@@ -56,6 +56,15 @@ namespace eval ::tg::cfg {
         watchMaxSynRecv     40
         updateUrl           ""
         updateCheck         0
+        dryRun              0
+        metricsEnable       0
+        metricsHost         127.0.0.1
+        metricsPort         9738
+        metricsToken        ""
+        alertUrl            ""
+        alertFormat         json
+        alertCooldown       300
+        satLagMs            250
         caFile              ""
     }
 
@@ -419,12 +428,12 @@ proc ::tg::cfg::validate {cfg} {
     foreach {k min max} {
         strikeThreshold 1 1000000  banResetAfter 60 31536000  levelCalmSec 5 86400
         linkMbps 1 1000000  maxConnections 0 1000000  trackerMax 1000 5000000
-        controlPort 1 65535
+        controlPort 1 65535  metricsPort 1 65535  alertCooldown 10 86400  satLagMs 20 60000
     } {
         if {![::tg::isInt [dict get $G $k] $min $max]} { lappend errs "$k must be a whole number between $min and $max" }
     }
     if {![::tg::isNum [dict get $G strikeLeakPerSec] 0 1000]} { lappend errs "strikeLeakPerSec must be a number >= 0" }
-    foreach k {harden autoLevel autoLockdown learnTrusted controlEnable removeRulesOnExit hardenDropInvalid hardenDropFragments hardenDropBogusFlags} {
+    foreach k {harden autoLevel autoLockdown learnTrusted controlEnable dryRun metricsEnable removeRulesOnExit hardenDropInvalid hardenDropFragments hardenDropBogusFlags} {
         if {![string is boolean -strict [dict get $G $k]]} { lappend errs "$k must be yes/no (1/0)" }
     }
     foreach k {hardenSynRate hardenSynBurst hardenConnLimit hardenUdpRate hardenUdpBurst hardenIcmpRate} {
@@ -435,6 +444,13 @@ proc ::tg::cfg::validate {cfg} {
     if {$tk ne "" && ![regexp {^[\x21-\x7e]+$} $tk]} { lappend errs "controlToken may only contain printable characters without spaces" }
     set ch [dict get $G controlHost]
     if {$ch ni {localhost} && ![::tg::ip::isValid $ch]} { lappend errs "controlHost must be an IP address (or localhost), not '$ch'" }
+    set mh [dict get $G metricsHost]
+    if {$mh ni {localhost} && ![::tg::ip::isValid $mh]} { lappend errs "metricsHost must be an IP address (or localhost), not '$mh'" }
+    set mt [dict get $G metricsToken]
+    if {$mt ne "" && ![regexp {^[\x21-\x7e]{16,}$} $mt]} { lappend errs "metricsToken must be at least 16 printable characters without spaces (or empty for none)" }
+    if {[dict get $G alertUrl] ne "" && ![regexp -nocase {^https?://[^\s/]+} [dict get $G alertUrl]]} { lappend errs "alertUrl must be empty or an https:// address" }
+    if {[dict get $G alertFormat] ni {json text}} { lappend errs "alertFormat must be json or text" }
+    if {[dict get $G dryRun] ne "" && [::tg::bool [dict get $G dryRun]]} { lappend warns "dryRun is on: automatic bans are only logged, nothing is blocked" }
     if {[dict get $G firewall] ni {auto nft iptables pf netsh none}} {
         lappend errs "firewall must be one of: auto nft iptables pf netsh none"
     }

@@ -51,6 +51,7 @@ proc ::tg::engine::start {{quiet 0}} {
 
     applyListeners
     ::tg::control::start
+    ::tg::ops::start
     set startedAt [clock seconds]
     set running 1
     ::tg::onTick ::tg::engine::tick
@@ -77,6 +78,7 @@ proc ::tg::engine::stop {} {
     variable runningCfg
     if {!$running} return
     ::tg::control::stop
+    ::tg::ops::stop
     ::tg::stopTicks
     ::tg::tcp::stopAll
     ::tg::udp::stopAll
@@ -130,11 +132,18 @@ proc ::tg::engine::reload {} {
     ::tg::fw::init
     if {[::tg::fw::enabled]} { ::tg::fw::sync } else { catch {::tg::fw::uninstall} }
     ::tg::control::sync
+    ::tg::ops::sync
     ::tg::log::info "configuration applied"
 }
 
 proc ::tg::engine::levelChanged {old new why} {
     ::tg::engine::event level "threat level $old -> $new: $why"
+    # the alert webhook hears about the level going up to "Under attack" or higher, and about it coming back down to normal
+    if {$new >= 2 && $new > $old} {
+        ::tg::ops::alert level-up "threat level raised to [lindex $::tg::level::names $new] ($why)"
+    } elseif {$new == 0 && $old >= 2} {
+        ::tg::ops::alert level-down "threat level back to normal"
+    }
 }
 
 proc ::tg::engine::event {type text} {
@@ -157,6 +166,7 @@ proc ::tg::engine::tick {t} {
     ::tg::tcp::sweep $t
     ::tg::udp::sweep $t
     ::tg::logw::poll $t
+    ::tg::ops::tick $t
     ::tg::fw::tick $t
     ::tg::acme::tick $t
     if {$t - $::tg::engine::lastHouse > 3600000} {
@@ -191,7 +201,8 @@ proc ::tg::engine::snapshot {} {
         net [dict create rx $::tg::mon::rx tx $::tg::mon::tx rxPps $::tg::mon::rxPps rxPct $::tg::mon::rxPct] \
         watchers [::tg::logw::status] \
         udpAvailable $::tg::udp::available \
-        trackedKeys [::tg::rate::size]
+        trackedKeys [::tg::rate::size] \
+        ops [dict merge [::tg::ops::status] [dict create dryRun [::tg::bool [::tg::cfg::general dryRun]]]]
 }
 
 proc ::tg::engine::tcpConns {n} {
@@ -309,6 +320,13 @@ proc ::tg::engine::cmd {verb args} {
                 rateKeys [::tg::rate::size] strikes [array size ::tg::ban::score] bans [::tg::ban::count] \
                 trusted [::tg::trust::count] verified [array size ::tg::http::verified] \
                 openChannels [llength [chan names]]]
+        }
+        alert {
+            if {[lindex $args 0] ne "test"} { error "usage: alert test" }
+            if {[::tg::cfg::general alertUrl] eq ""} { error "alertUrl is not set in the configuration" }
+            unset -nocomplain ::tg::ops::alertAt(test)
+            ::tg::ops::alert test "this is a test alert from TclGuard (everything is fine)"
+            return "test alert queued; the log says whether it was delivered"
         }
         ping      { return pong }
         default   { error "unknown command '$verb'" }

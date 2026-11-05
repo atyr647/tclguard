@@ -7,6 +7,8 @@
 # ================================================================ ::tg::ban ===
 
 namespace eval ::tg::ban {
+    variable dryAt          ;# key -> ms of the last dry-run log line
+    array set dryAt {}
     variable banned          ;# key -> dict {until since reason level source}
     array set banned {}
     variable score           ;# key -> {points lastMs}
@@ -160,6 +162,18 @@ proc ::tg::ban::add {ip reason {sec ""} {source auto}} {
         return 0
     }
     set k [keyOf $ip]
+    if {$source ne "manual" && [::tg::bool [::tg::cfg::general dryRun]]} {
+        # dry run: say what would have happened, do nothing (once a minute per address, so a flood cannot flood the log)
+        variable dryAt
+        set tn [::tg::now]
+        if {![info exists dryAt($k)] || $tn - $dryAt($k) > 60000} {
+            if {[array size dryAt] > 5000} { array unset dryAt }
+            set dryAt($k) $tn
+            ::tg::stat::incr wouldBan
+            ::tg::log::alert "DRY RUN: would ban $k: $reason"
+        }
+        return 0
+    }
     variable nBanned
     variable nHist
     if {![info exists banned($k)] && $nBanned >= 200000} {

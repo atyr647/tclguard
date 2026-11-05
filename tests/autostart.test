@@ -49,7 +49,28 @@ test as-windows-fallback {if the elevated task cannot be created, a normal one i
     set e [::tg::autostart::enable]
     set ::tg::autostart::runner fakeRun
     list $e [llength $::acmds] [expr {"HIGHEST" in [lindex $::acmds 1]}]
-} -result {{} 2 0}
+} -result {{} 3 0}
+
+test as-windows-task-is-tuned-for-long-running {the task is made a long-running one: no 72 hour limit, restart on failure} -setup {
+    plat windows
+    set ::acmds {}
+    set ::arc 0
+} -body {
+    ::tg::autostart::enable
+    set ps [lindex [lindex $::acmds end] end]
+    list [lindex [lindex $::acmds end] 0] [string match "*ExecutionTimeLimit = 'PT0S'*" $ps] [string match "*RestartCount = 999*" $ps] [string match "*StopIfGoingOnBatteries = \$false*" $ps] [string match "*Set-ScheduledTask -TaskName 'TclGuard'*" $ps]
+} -result {powershell 1 1 1 1}
+
+test as-windows-tune-failure-is-not-fatal {} -setup {
+    plat windows
+    set ::acmds {}
+    proc fakeRun3 {argv} { lappend ::acmds $argv; list [expr {[lindex $argv 0] eq "powershell" ? 1 : 0}] "denied" }
+    set ::tg::autostart::runner fakeRun3
+} -body {
+    set e [::tg::autostart::enable]
+    set ::tg::autostart::runner fakeRun
+    list $e [llength $::acmds]
+} -result {{} 2}
 
 test as-windows-status-disable {} -setup {plat windows; set ::acmds {}; set ::arc 0} -body {
     set s [::tg::autostart::status]

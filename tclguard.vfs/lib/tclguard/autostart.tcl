@@ -33,7 +33,8 @@ proc ::tg::autostart::run {argv} {
 # The command that starts this program again (works as a starpack and from source).
 proc ::tg::autostart::selfCommand {args} {
     set exe [info nameofexecutable]
-    if {[info exists ::starkit::topdir]} { return [list $exe {*}$args] }
+    # a starpack IS the executable; when the starkit package happens to be installed, tclsh running main.tcl has a topdir too (the script folder)
+    if {[info exists ::starkit::topdir] && [string tolower [file normalize $::starkit::topdir]] eq [string tolower [file normalize $exe]]} { return [list $exe {*}$args] }
     list $exe [file normalize $::argv0] {*}$args
 }
 
@@ -89,6 +90,24 @@ proc ::tg::autostart::status {} {
     }
 }
 
+# PowerShell that makes the scheduled task a long-running one: no execution time limit (the default is 72 hours), restart after a failure
+# (every minute, up to 999 times), allowed on battery power, and never a second copy.
+proc ::tg::autostart::taskTuneScript {name} {
+    set n [::tg::psq $name]
+    join [list \
+        "\$ErrorActionPreference = 'Stop'" \
+        "\$t = Get-ScheduledTask -TaskName $n" \
+        "\$s = \$t.Settings" \
+        "\$s.ExecutionTimeLimit = 'PT0S'" \
+        "\$s.DisallowStartIfOnBatteries = \$false" \
+        "\$s.StopIfGoingOnBatteries = \$false" \
+        "\$s.RestartCount = 999" \
+        "\$s.RestartInterval = 'PT1M'" \
+        "\$s.MultipleInstances = 'IgnoreNew'" \
+        "Set-ScheduledTask -TaskName $n -Settings \$s | Out-Null" \
+        ] "; "
+}
+
 # Returns "" on success, or an error message. The installer passes the command line of the
 # INSTALLED copy; by default the autostart entry starts the program that is running now.
 proc ::tg::autostart::enable {{cmd ""}} {
@@ -104,6 +123,10 @@ proc ::tg::autostart::enable {{cmd ""}} {
                 lassign [run [list schtasks /Create /TN $taskName /TR $tr /SC ONLOGON /F]] rc out
             }
             if {$rc != 0} { return "could not create the scheduled task: [string trim $out]" }
+            # schtasks creates tasks that Windows kills after 72 hours, that do not start on battery power and are never restarted if
+            # they die: wrong for something that is meant to run for months. Best effort (the task itself already exists).
+            lassign [run [list powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command [taskTuneScript $taskName]]] trc tout
+            if {$trc != 0} { ::tg::log::warn "autostart: the scheduled task was created, but its settings (no 72-hour limit, restart on failure) could not be adjusted: [string trim $tout]" }
         }
         macos {
             if {[catch {

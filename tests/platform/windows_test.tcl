@@ -114,6 +114,13 @@ check "autostart can be enabled" [expr {$err eq ""}] $err
 check "scheduled task is reported" [::tg::autostart::status]
 set rc [catch {exec schtasks /Query /TN TclGuard /V /FO LIST} q]
 check "task runs the program with --gui at logon" [expr {!$rc && [string match "*--gui*" $q] && [string match "*logon*" [string tolower $q]]}] $q
+if {$err eq ""} {
+    set xml ""
+    catch {exec schtasks /Query /TN TclGuard /XML} xml
+    check "the task has no execution time limit (Windows would otherwise stop it after 72 hours)" [regexp {<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>} $xml] $xml
+    check "the task restarts itself after a failure" [expr {[regexp {<RestartOnFailure>} $xml] && [regexp {<Count>999</Count>} $xml]}] $xml
+    check "the task may run on battery power" [expr {[regexp {<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>} $xml] && [regexp {<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>} $xml]}] $xml
+}
 set err [::tg::autostart::disable]
 check "autostart can be removed" [expr {$err eq "" && ![::tg::autostart::status]}] $err
 }

@@ -30,13 +30,14 @@ proc usage {} {
     puts {TclGuard - DDoS protection for game servers and home-hosted websites
 
 Usage:
-  tclguard [--config FILE] [--headless | --gui] [--no-firewall] [--verbose]
+  tclguard [--config FILE] [--headless | --gui] [--no-firewall] [--verbose] [--dry-run]
         Run the guard. Opens the control window when a display is available.
+        --dry-run: automatic bans are only logged ("DRY RUN: would ban ..."), nothing is blocked: watch what it would do on real traffic first.
   tclguard ctl <command> [args]     Control a running instance (token: config file, or TCLGUARD_TOKEN in the environment):
         status | bans | top | listeners | log [n]
         ban <ip|cidr> [seconds|0=forever] [reason...]    unban <ip>    unbanall
         allow <ip|cidr>    disallow <ip|cidr>    block <ip|cidr>    unblock <ip|cidr>
-        level <0-3|auto>   reload   fw status|install|uninstall   stop
+        level <0-3|auto>   reload   fw status|install|uninstall   alert test   stop
   tclguard fw install|remove|status|print     Manage kernel firewall rules (needs root/admin)
   tclguard check [--config FILE]              Validate the configuration
   tclguard init [--preset NAME] [--force]     Create a starter configuration
@@ -450,9 +451,11 @@ proc cmdRun {argv} {
     set gui [takeOpt argv --gui]
     set nofw [takeOpt argv --no-firewall]
     set verbose [takeOpt argv --verbose]
+    set dryrun [takeOpt argv --dry-run]
     if {[llength $argv]} { die "unknown argument '[lindex $argv 0]' (see 'tclguard help')" }
     if {$nofw ne ""} { ::tg::cfg::override firewall none }
     if {$verbose ne ""} { ::tg::cfg::override logLevel debug }
+    if {$dryrun ne ""} { ::tg::cfg::override dryRun 1 }
     lassign [::tg::cfg::validate $::tg::cfg::current] errs warns
     foreach w $warns { puts stderr "warning: $w" }
     if {[llength $errs]} {
@@ -496,6 +499,7 @@ switch -glob -- $cmd {
     ctl      { cmdCtl [lrange $argv 1 end] }
     fw       { cmdFw [lrange $argv 1 end] }
     selftest { exit [::tg::selftest::run [lrange $argv 1 end]] }
+    alert-send { ::tg::ops::alertSendMain }
     autostart { cmdAutostart [lrange $argv 1 end] }
     install   { cmdInstall [lrange $argv 1 end] }
     uninstall { cmdUninstall [lrange $argv 1 end] }
