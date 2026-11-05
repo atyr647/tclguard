@@ -1,0 +1,130 @@
+# Regression tests for the findings of the hardening audits (each test is a behaviour that was demonstrated to be wrong before).
+source [file join [file dirname [info script]] helpers.tcl]
+loadmods util config bans limiter tcpproxy httpproxy
+set ::tg::log::stderr 0
+testConstraint unixperm [expr {$::tcl_platform(platform) eq "unix"}]
+
+# ---- files: owner-only from the first byte, atomic, no leftovers
+test file-atomic-default-0600 {} -constraints unixperm -body {
+    set f [file join [makeDirectory hf] secret.txt]
+    ::tg::writeFileAtomic $f "token"
+    list [format %o [expr {[file attributes $f -permissions] & 0777}]] [::tg::readFile $f] [llength [glob -nocomplain -directory [file dirname $f] *.tmp*]]
+} -result {600 token 0}
+test file-atomic-explicit-mode {} -constraints unixperm -body {
+    set f [file join [makeDirectory hf] unit.service]
+    ::tg::writeFileAtomic $f "x" 0644
+    format %o [expr {[file attributes $f -permissions] & 0777}]
+} -result 644
+test file-atomic-replaces-link-not-target {} -constraints unixperm -body {
+    set d [makeDirectory hl]
+    set victim [file join $d victim]; set fh [open $victim w]; puts -nonewline $fh KEEP; close $fh
+    set l [file join $d link]; file link -symbolic $l $victim
+    ::tg::writeFileAtomic $l "NEW"
+    list [::tg::readFile $victim] [file type $l]
+} -result {KEEP file}
+test file-atomic-no-weak-random {} -body {
+    # there is no srand fallback left in the random source
+    set body [info body ::tg::randomHex]
+    set code {}
+    foreach l [split $body \n] { if {![string match {#*} [string trim $l]]} { append code $l \n } }
+    expr {[string first srand $code] < 0}
+} -result 1
+
+# ---- CIDR parsing: prefix lengths are decimal, a leading zero is refused
+test cidr-octal-prefix-refused {} -body {
+    list [::tg::ip::parseCidr 10.0.0.0/010] [::tg::ip::parseCidr 10.0.0.0/08] [::tg::ip::parseCidr 1.2.3.4/032] [::tg::ip::normCidr 10.0.0.0/8]
+} -result {{} {} {} 10.0.0.0/8}
+test cidr-overlap-with-set {} -body {
+    ::tg::ip::setLoad allow {10.0.0.0/8 192.168.0.0/16 2001:db8::/32}
+    list [::tg::ip::overlapsSet allow 10.1.0.0/16] [::tg::ip::overlapsSet allow 10.0.0.0/7] [::tg::ip::overlapsSet allow 11.0.0.0/8] \
+         [::tg::ip::overlapsSet allow 192.168.5.0/24] [::tg::ip::overlapsSet allow 8.8.8.8] [::tg::ip::overlapsSet allow 2001:db8:1::/48] [::tg::ip::overlapsSet allow 2001:db9::/32]
+} -result {1 1 0 1 0 1 0}
+test ip-parse-does-not-cache-junk {} -body {
+    set before $::tg::ip::cacheCount
+    for {set i 0} {$i < 500} {incr i} { ::tg::ip::parse "junk-$i" }
+    expr {$::tg::ip::cacheCount - $before}
+} -result 0
+
+# ---- client address from X-Forwarded-For: never an entry the client chose when the nearest one is unreadable
+test xff-trusted-proxy-skipped {} -body {
+    ::tg::ip::setLoad tp:t {127.0.0.1}
+    list [::tg::http::pickClientIp "1.1.1.1, 2.2.2.2, 127.0.0.1" tp:t] [::tg::http::pickClientIp "127.0.0.1" tp:t] [::tg::http::pickClientIp "5.5.5.5" tp:t]
+} -result {2.2.2.2 127.0.0.1 5.5.5.5}
+test xff-unreadable-nearest-entry-means-ignore-header {} -body {
+    ::tg::ip::setLoad tp:t {127.0.0.1}
+    list [::tg::http::pickClientIp "9.9.9.9, unknown" tp:t] [::tg::http::pickClientIp "9.9.9.9, 01.2.3.4" tp:t] [::tg::http::pickClientIp "9.9.9.9, " tp:t] \
+         [::tg::http::pickClientIp "9.9.9.9, [string repeat a 60]" tp:t]
+} -result {{} {} 9.9.9.9 {}}
+test xff-port-suffix-understood {} -body {
+    ::tg::ip::setLoad tp:t {127.0.0.1}
+    list [::tg::http::pickClientIp "9.9.9.9, 1.2.3.4:5678" tp:t] [::tg::http::pickClientIp {[2001:db8::1]:443} tp:t]
+} -result {1.2.3.4 2001:db8::1}
+test xff-only-the-last-eight-entries-count {} -body {
+    ::tg::ip::setLoad tp:t {127.0.0.1}
+    set many [join [lrepeat 20 "junk"] ", "]
+    list [::tg::http::pickClientIp "$many, 7.7.7.7" tp:t] [::tg::http::pickClientIp "7.7.7.7, $many" tp:t] [::tg::http::pickClientIp "8.8.8.8, [join [lrepeat 12 127.0.0.1] ", "]" tp:t]
+} -result {7.7.7.7 {} 127.0.0.1}
+
+# ---- paths
+test normpath-plain-untouched-and-complex-refused {} -body {
+    list [::tg::http::normPath /a/b] [::tg::http::normPath /a//b/../c] [::tg::http::normPath /a%41] [::tg::http::normPath "/[string repeat %41 200]"] [::tg::http::normPath "/[string repeat a/./ 300]"]
+} -result {/a/b /a/c /aA {} {}}
+
+# ---- bans: sorting beyond 49 days, escalation, ranges, proxies
+proc fresh2 {} {
+    set ::tg::clockSkew 0
+    array unset ::tg::ban::banned; array unset ::tg::ban::score; array unset ::tg::ban::hist
+    set ::tg::ban::nBanned 0; set ::tg::ban::nScore 0; set ::tg::ban::nHist 0
+    set ::tg::ban::onBan {}; set ::tg::ban::onUnban {}
+    ::tg::cfg::set_ [::tg::cfg::new]
+    ::tg::ban::configure
+    ::tg::ban::setFile ""
+    ::tg::ip::setLoad proxies {}
+}
+test ban-all-sorts-bans-100-days-apart {} -setup fresh2 -body {
+    set ::tg::fakeBase 1700000000000
+    ::tg::ban::add 8.8.8.8 old 0 manual
+    dict set ::tg::ban::banned(8.8.8.8) since [expr {[::tg::now] - 100 * 86400 * 1000}]
+    ::tg::ban::add 9.9.9.9 new 60 manual
+    lmap r [::tg::ban::all] { dict get $r key }
+} -result {9.9.9.9 8.8.8.8}
+test ban-readding-a-banned-address-does-not-escalate {} -setup fresh2 -body {
+    ::tg::ban::add 8.8.8.8 first "" auto
+    for {set i 0} {$i < 5} {incr i} { ::tg::ban::add 8.8.8.8 again "" auto }
+    list [lindex $::tg::ban::hist(8.8.8.8) 0] [expr {([dict get $::tg::ban::banned(8.8.8.8) until] - [dict get $::tg::ban::banned(8.8.8.8) since]) / 1000}]
+} -result {1 60}
+test ban-escalation-counts-from-the-end-of-the-last-ban {} -setup fresh2 -body {
+    ::tg::ban::add 8.8.8.8 first "" auto            ;# 60 s
+    incr ::tg::clockSkew 61000
+    ::tg::ban::tick [::tg::now]                      ;# expired
+    ::tg::ban::add 8.8.8.8 second "" auto            ;# level 1: 600 s
+    expr {([dict get $::tg::ban::banned(8.8.8.8) until] - [dict get $::tg::ban::banned(8.8.8.8) since]) / 1000}
+} -result 600
+test ban-range-key-detection {} -body {
+    list [::tg::ban::isRangeKey 10.0.0.0/8] [::tg::ban::isRangeKey 2001:db8:1:2::/64] [::tg::ban::isRangeKey 8.8.8.8] [::tg::ban::isRangeKey 2001:db8::/48]
+} -result {1 0 0 1}
+test ban-trusted-proxy-is-never-struck {} -setup fresh2 -body {
+    ::tg::ip::setLoad proxies {203.0.113.7}
+    set n 0
+    for {set i 0} {$i < 100} {incr i} { incr n [::tg::ban::strike 203.0.113.7 5 test] }
+    list $n [::tg::ban::check 203.0.113.7]
+} -result {0 0}
+test ban-strike-after-clock-step-back-does-not-jump {} -setup fresh2 -body {
+    ::tg::ban::strike 8.8.8.8 3 a
+    set p0 [lindex $::tg::ban::score([::tg::ip::key 8.8.8.8]) 0]
+    incr ::tg::clockSkew -3600000                    ;# (the test clock; the real one is monotonic, but the arithmetic itself must hold too)
+    ::tg::ban::strike 8.8.8.8 1 b
+    set p1 [lindex $::tg::ban::score([::tg::ip::key 8.8.8.8]) 0]
+    expr {$p1 <= $p0 + 1.001}
+} -result 1
+
+# ---- limiter: the key counter
+test rate-key-counter {} -body {
+    ::tg::rate::reset
+    ::tg::rate::configure
+    foreach k {a b c d} { ::tg::rate::hit $k 1000 }
+    ::tg::rate::forget b
+    list $::tg::rate::nKeys [::tg::rate::size]
+} -result {3 3}
+
+cleanupTests

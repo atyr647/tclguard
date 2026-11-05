@@ -16,6 +16,7 @@ namespace eval ::tg::rate {
     array set win {}
     variable max 400000       ;# tracked keys; beyond this new keys are not tracked
     variable overflow 0       ;# hits we could not track (table full)
+    variable nKeys 0          ;# keys tracked (`array size` is O(n) in Tcl 8.6: 2 ms at 400,000 keys, on every new address); resynchronised by gc
 }
 
 proc ::tg::rate::configure {} {
@@ -32,12 +33,14 @@ proc ::tg::rate::hit {key windowMs {n 1}} {
     variable win
     variable max
     variable overflow
+    variable nKeys
     set t [::tg::now]
     if {![info exists start($key)]} {
-        if {[array size start] >= $max} {
+        if {$nKeys >= $max} {
             incr overflow
             return 0
         }
+        incr nKeys
         set start($key) $t
         set cur($key) $n
         set prev($key) 0
@@ -80,6 +83,8 @@ proc ::tg::rate::forget {key} {
     variable prev
     variable start
     variable win
+    variable nKeys
+    if {[info exists start($key)] && $nKeys > 0} { incr nKeys -1 }
     unset -nocomplain cur($key) prev($key) start($key) win($key)
 }
 
@@ -91,12 +96,14 @@ proc ::tg::rate::gc {t} {
     variable prev
     variable start
     variable win
+    variable nKeys
     if {$t % 10000 >= 1000} return
     foreach k [array names start] {
         if {$t - $start($k) > 2 * $win($k)} {
             unset cur($k) prev($k) start($k) win($k)
         }
     }
+    set nKeys [array size start]
 }
 
 proc ::tg::rate::reset {} {
@@ -105,6 +112,8 @@ proc ::tg::rate::reset {} {
     variable start
     variable win
     variable overflow
+    variable nKeys
     array unset cur; array unset prev; array unset start; array unset win
     set overflow 0
+    set nKeys 0
 }

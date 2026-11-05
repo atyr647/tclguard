@@ -20,6 +20,7 @@ namespace eval ::tg::http {
     variable secret ""
     variable verified          ;# challenge: key -> expiry ms
     array set verified {}
+    variable nVerified 0
     variable reasons
     array set reasons {
         200 OK 307 {Temporary Redirect} 400 {Bad Request} 403 Forbidden 405 {Method Not Allowed}
@@ -32,6 +33,7 @@ namespace eval ::tg::http {
 proc ::tg::http::prepare {name L} {
     variable secret
     ::tg::ip::setLoad "tp:$name" [dict get $L trustedProxies]
+    foreach item [::tg::ip::setItems "tp:$name"] { ::tg::ip::setAdd proxies $item }    ;# (see ::tg::ban::strike: a trusted proxy is never struck)
     if {$secret eq ""} { set secret [::tg::randomHex 32] }   ;# (errors without an OS random source: no weak challenge secret)
 }
 
@@ -195,6 +197,7 @@ proc ::tg::http::process {id} {
                     if {[string length $buf($id)] > 4096} { reject $id 400 "bad chunk header" 1 }
                     return
                 }
+                if {$idx > 4096} { reject $id 400 "bad chunk header" 1; return }
                 set line [string range $buf($id) 0 [expr {$idx - 1}]]
                 # size[;name[=token|"quoted"]]...  The extensions are forwarded, so they must be
                 # well-formed: an unterminated quote or a control byte is parsed differently by
@@ -206,6 +209,7 @@ proc ::tg::http::process {id} {
                     return
                 }
                 scan $hex %x size
+                if {$size > 2147483647} { reject $id 413 "chunk too large" 0; return }
                 # Floods of tiny chunks cost us a buffer copy and a write each (~10 us with the fast path
                 # below, ~75-120 us before it), and chunks are not counted as requests; real clients send
                 # big ones. Below 128 bytes a request gets 1000 chunks, which bounds its CPU cost to a few
@@ -264,6 +268,7 @@ proc ::tg::http::process {id} {
                     if {[string length $buf($id)] > 4096} { reject $id 431 "trailer too large" 1 }
                     return
                 }
+                if {$idx > 4096} { reject $id 431 "trailer too large" 1; return }
                 set line [string range $buf($id) 0 [expr {$idx - 1}]]
                 # Trailers are forwarded, so each one must be a clean header line:
                 # a bare LF or control byte here would let a lenient backend see a
@@ -278,7 +283,9 @@ proc ::tg::http::process {id} {
                     # let a client smuggle e.g. Content-Length or X-Forwarded-For past the checks.
                     set tn [string tolower [string range $line 0 [expr {[string first : $line] - 1}]]]
                     if {$tn in {content-length transfer-encoding host connection upgrade expect te trailer keep-alive
-                                proxy-connection max-forwards content-encoding x-forwarded-for x-real-ip forwarded}} {
+                                proxy-connection max-forwards content-encoding x-forwarded-for x-real-ip forwarded
+                                x-forwarded-proto x-forwarded-host x-forwarded-port x-forwarded-ssl true-client-ip x-client-ip
+                                client-ip x-originating-ip cf-connecting-ip authorization proxy-authorization}} {
                         reject $id 400 "forbidden chunk trailer field" 1
                         return
                     }
@@ -345,7 +352,7 @@ proc ::tg::http::parseHead {id block} {
     }
     set hdrs [lrange $clean 1 end]
     if {[llength $hdrs] > [dict get $Lc maxHeaders]} { return {err 431 "too many headers"} }
-    set cl {}; set te {}; set hosts 0; set conn {}; set upgrade 0; set cookie {}; set realip {}
+    set cl {}; set te {}; set hosts 0; set conn {}; set upgrade 0; set upgv {}; set cookie {}; set realip {}
     set parsed {}
     set realName [string tolower [dict get $Lc realIpHeader]]
     foreach h $hdrs {
@@ -369,7 +376,7 @@ proc ::tg::http::parseHead {id block} {
             transfer-encoding { lappend te [string tolower $hv] }
             host { incr hosts }
             connection { lappend conn {*}[split [string tolower $hv] ,] }
-            upgrade { set upgrade 1 }
+            upgrade { set upgrade 1; lappend upgv [string tolower [string trim $hv " \t"]] }
             cookie { lappend cookie $hv }
         }
         if {$ln eq $realName} { lappend realip $hv }
@@ -382,9 +389,14 @@ proc ::tg::http::parseHead {id block} {
     # hop-by-hop and strip it: the body would then be parsed as new requests, or the address we
     # add for the backend would vanish. Nothing legitimate lists these.
     foreach c $connTokens {
-        if {[string map {_ -} $c] in {content-length transfer-encoding host x-forwarded-for x-real-ip forwarded}} {
+        if {[string map {_ -} $c] in {content-length transfer-encoding host x-forwarded-for x-real-ip forwarded x-forwarded-proto x-forwarded-host x-forwarded-port}} {
             return {err 400 "Connection header names a protected field"}
         }
+    }
+    # Only a WebSocket upgrade is tunnelled (everything after the 101 is opaque to the guard: no rate limits, no path limits). Any other
+    # protocol the client asks for (h2c, ...) would turn the connection into an unmetered tunnel the moment a backend agreed to it.
+    if {$upgrade && "upgrade" in $connTokens && ([llength $upgv] != 1 || [lindex $upgv 0] ne "websocket")} {
+        return {err 400 "only Upgrade: websocket is supported"}
     }
     # ---- message framing (the part that must agree with the backend) ----
     set framing none; set clen 0
@@ -401,7 +413,8 @@ proc ::tg::http::parseHead {id block} {
         # No leading zeros: a reader using strtol(s, 0, 0) takes "010" as octal 8 (we say 10).
         if {![regexp {^(?:0|[1-9][0-9]{0,14})$} $first]} { return {err 400 "invalid Content-Length"} }
         scan $first %ld clen
-        if {$clen > [dict get $Lc maxBodyMB] * 1048576} { return {err 413 "request body too large"} }
+        # (2^31-1 at most whatever maxBodyMB says: a backend that keeps lengths in 32 bits would wrap larger values and see a different message)
+        if {$clen > 2147483647 || $clen > [dict get $Lc maxBodyMB] * 1048576} { return {err 413 "request body too large"} }
         if {$clen > 0} { set framing length }
     }
     dict create method $method target $target version $version reqline $reqline headers $parsed \
@@ -455,7 +468,10 @@ proc ::tg::http::handleRequest {id block} {
         # per-path limits (e.g. login brute force)
         set path [lindex [split $target ?#] 0]
         set npath $path
-        if {[llength [dict get $Lc pathLimits]]} { set npath [normPath $path] }
+        if {[llength [dict get $Lc pathLimits]]} {
+            set npath [normPath $path]
+            if {$npath eq ""} { reject $id 400 "request path too complex" 1; return stop }
+        }
         set i 0
         foreach pl [dict get $Lc pathLimits] {
             lassign $pl re cnt sec
@@ -503,6 +519,7 @@ proc ::tg::http::handleRequest {id block} {
             # also catch X_Real_IP style spellings that some backends fold to X-Real-IP
             set fold [string map {_ -} $ln]
             if {$fold in {x-real-ip forwarded}} continue
+            if {!$viaProxy && $fold in {true-client-ip x-client-ip client-ip x-originating-ip cf-connecting-ip x-forwarded-host x-forwarded-port x-forwarded-ssl front-end-https x-url-scheme}} continue
             if {$fold eq "x-forwarded-proto"} {
                 if {$viaProxy && $ln eq "x-forwarded-proto" && [string tolower $hv] in {http https}} { set proto [string tolower $hv] }
                 continue
@@ -549,6 +566,9 @@ proc ::tg::http::handleRequest {id block} {
 # The path the way a backend resolves it: %XX decoded, "\" read as "/", ";params" and empty or
 # "." segments dropped, ".." applied. Used only to match per-path limits.
 proc ::tg::http::normPath {path} {
+    # (about 10 microseconds per escape or segment: a plain path is returned as it is, a path built to be expensive is answered with "")
+    if {[string index $path 0] eq "/" && [string first % $path] < 0 && [string first \\ $path] < 0 && [string first {;} $path] < 0 && [string first // $path] < 0 && [string first /. $path] < 0} { return $path }
+    if {[llength [split $path %]] > 129 || [llength [split $path /]] > 257} { return "" }
     set parts [split $path %]
     set d [lindex $parts 0]
     foreach p [lrange $parts 1 end] {
@@ -576,22 +596,41 @@ proc ::tg::http::blockedReq {id ckey} {
     ::tg::stat::talk $ckey blocked
 }
 
-# Rightmost entry that is not one of our trusted proxies.
+# Rightmost entry that is not one of our trusted proxies. Only the last 8 entries are looked at (a longer chain is a client padding the
+# header, and parsing a kilobyte of it per request is work an attacker could choose). An entry that cannot be read (the proxy appended
+# something unusual, or the client's own junk is the nearest entry) means the header cannot be trusted: return "" and the caller keeps
+# the peer address, instead of falling back to an entry further left, which the client chose.
 proc ::tg::http::pickClientIp {headerValue setName} {
+    set items [split $headerValue ,]
+    if {[llength $items] > 8} { set items [lrange $items end-7 end] }
     set parts {}
-    foreach p [split $headerValue ,] {
+    foreach p $items {
         set p [string trim $p " \t"]
-        if {$p ne "" && [::tg::ip::isValid $p]} { lappend parts $p }
+        if {$p eq ""} continue
+        # "1.2.3.4:5678" and "[2001:db8::1]:443" (some proxies append the port); anything else is judged as written
+        if {[regexp {^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):\d{1,5}$} $p -> bare]} { set p $bare } elseif {[regexp {^\[([0-9a-fA-F:.]+)\](?::\d{1,5})?$} $p -> bare]} { set p $bare }
+        if {[string length $p] > 45} { set p "" }
+        lappend parts $p
     }
     if {![llength $parts]} { return "" }
     for {set i [expr {[llength $parts] - 1}]} {$i >= 0} {incr i -1} {
         set p [lindex $parts $i]
+        if {$p eq "" || ![::tg::ip::isValid $p]} { return "" }
         if {![::tg::ip::setMatch $setName $p]} { return $p }
     }
     return [lindex $parts 0]
 }
 
 # Protocol switch verdict: look at the backend's first response bytes.
+# Called for every chunk of the backend's response: a response that is still being delivered is not an idle keep-alive connection.
+proc ::tg::http::responseActive {id} {
+    variable ps; variable buf; variable L
+    if {[info exists ps($id)] && $ps($id) eq "hdr" && $buf($id) eq "" && $::tg::tcp::dl($id) > 0} {
+        set ka [dict get $L($id) keepAliveTimeout]
+        if {$ka > 0} { set ::tg::tcp::dl($id) [expr {[::tg::now] + $ka * 1000}] }
+    }
+}
+
 proc ::tg::http::onResponseData {id data} {
     variable upg; variable rp; variable ps
     if {![info exists upg($id)] || $upg($id) ne "pending"} return
@@ -624,7 +663,8 @@ proc ::tg::http::challengePassed {d ckey Lc} {
     foreach c [dict get $d cookie] {
         if {[regexp {(?:^|[; ])tg_ok=([1-9][0-9]{0,11})\.([0-9a-f]{32})(?:;|$)} $c -> exp m]} {
             if {$exp * 1000 > $now && $m eq [mac $ckey $exp]} {
-                if {[array size verified] < 100000} { set verified($ckey) [expr {$exp * 1000}] }
+                variable nVerified
+                if {$nVerified < 100000} { incr nVerified; set verified($ckey) [expr {$exp * 1000}] }
                 return 1
             }
         }
@@ -648,9 +688,22 @@ proc ::tg::http::challenge {id d ckey Lc} {
 
 # ------------------------------------------------------------- responses ---
 
+# The address that deserves a strike for what this connection did: the peer itself, except behind a trusted proxy, where the peer is the
+# proxy (it stands for every visitor; striking it would ban the whole site for one bad request) and only the client address that was
+# taken from the forwarding header, once known, counts.
+proc ::tg::http::strikeWho {id} {
+    variable ip; variable eip; variable name
+    set peer $ip($id)
+    if {[::tg::ip::setMatch "tp:$name($id)" $peer]} {
+        if {[info exists eip($id)] && $eip($id) ne $peer} { return $eip($id) }
+        return ""
+    }
+    return $peer
+}
+
 proc ::tg::http::reject {id code why strike} {
     variable ip
-    if {$strike > 0} { ::tg::ban::strike $::tg::http::ip($id) $strike "bad HTTP request: $why" }
+    if {$strike > 0} { set who [strikeWho $id]; if {$who ne ""} { ::tg::ban::strike $who $strike "bad HTTP request: $why" } }
     ::tg::stat::incr blocked
     ::tg::stat::incr reqBlocked
     ::tg::stat::talk $::tg::tcp::ckey($id) blocked
@@ -738,17 +791,17 @@ proc ::tg::http::deadline {id} {
         drain { ::tg::tcp::close_ $id "finished" }
         hdr {
             if {$buf($id) ne ""} {
-                ::tg::ban::strike $ip($id) 1 "slow request headers (slowloris-style)"
+                set who [strikeWho $id]; if {$who ne ""} { ::tg::ban::strike $who 1 "slow request headers (slowloris-style)" }
                 ::tg::stat::incr blocked
                 respondRaw $id 408 "Request Timeout" "Request not received in time."
             } else {
-                if {$nreq($id) == 0} { ::tg::ban::strike $ip($id) 1 "connected but sent no request" }
+                if {$nreq($id) == 0} { set who [strikeWho $id]; if {$who ne ""} { ::tg::ban::strike $who 1 "connected but sent no request" } }
                 ::tg::tcp::close_ $id "keep-alive timeout"
             }
         }
         upgwait { ::tg::tcp::close_ $id "upgrade timeout" }
         default {
-            ::tg::ban::strike $ip($id) 1 "stalled request body"
+            set who [strikeWho $id]; if {$who ne ""} { ::tg::ban::strike $who 1 "stalled request body" }
             ::tg::tcp::close_ $id "body timeout"
         }
     }

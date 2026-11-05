@@ -10,6 +10,7 @@
 namespace eval ::tg {
     variable VERSION 1.0.0
     variable clockSkew 0        ;# milliseconds; tests move time forward with this
+    variable lastNow 0
     variable tickCmds {}
     variable tickRunning 0
     variable tickJob ""
@@ -18,9 +19,17 @@ namespace eval ::tg {
 
 # ---------------------------------------------------------------- clock ----
 
+# Never runs backwards: if the wall clock is set back (NTP, a manual change, a VM resume) the step is absorbed, so rate windows keep rolling,
+# a 60-second ban still ends after 60 seconds and strike scores do not jump. A step FORWARD is real elapsed time and is left alone.
 proc ::tg::now {} {
     variable clockSkew
-    expr {[clock milliseconds] + $clockSkew}
+    variable lastNow
+    set t [expr {[clock milliseconds] + $clockSkew}]
+    if {$t < $lastNow} {
+        incr clockSkew [expr {$lastNow - $t}]
+        return $lastNow
+    }
+    return [set lastNow $t]
 }
 
 # ------------------------------------------------------------ scheduler ----
@@ -200,6 +209,8 @@ proc ::tg::ip::parse {s} {
     set t [string trim $s " \t\r\n"]
     if {[string first % $t] >= 0} { set t [lindex [split $t %] 0] }
     if {[string first : $t] < 0} { set r [parse4 $t] } else { set r [parse6 $t] }
+    # (only answers worth remembering: a stream of distinct junk strings must neither fill the table nor evict the real client addresses)
+    if {$r eq ""} { return {} }
     if {$cacheCount > 20000} { array unset pcache; array unset ncache; set cacheCount 0 }
     incr cacheCount
     return [set pcache($s) $r]
@@ -329,7 +340,11 @@ proc ::tg::ip::parseCidr {s} {
     set s [string trim $s " \t\r\n"]
     if {$s eq ""} { return {} }
     set bits -1
-    if {[regexp {^([^/]+)/(\d{1,3})$} $s -> a bits]} { set s $a }
+    if {[regexp {^([^/]+)/(\d{1,3})$} $s -> a bits]} {
+        set s $a
+        # decimal, always: "/010" is not octal 8 and "/08" is not an error (a leading zero means a typo, so refuse it)
+        if {[string length $bits] > 1 && [string index $bits 0] eq "0"} { return {} }
+    }
     set p [parse $s]
     if {$p eq ""} { return {} }
     lassign $p fam v

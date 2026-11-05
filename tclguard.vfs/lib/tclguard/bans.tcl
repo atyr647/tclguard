@@ -13,6 +13,9 @@ namespace eval ::tg::ban {
     array set score {}
     variable hist            ;# key -> {level lastBanMs}
     array set hist {}
+    variable nScore 0        ;# table sizes kept as counters (`array size` is O(n) in Tcl 8.6); resynchronised by tick
+    variable nBanned 0
+    variable nHist 0
     variable onBan {}        ;# callbacks: {*}cmd key info
     variable onUnban {}      ;# callbacks: {*}cmd key
     variable dirty 0
@@ -67,6 +70,12 @@ proc ::tg::ban::keyOf {target} {
     ::tg::ip::key $target
 }
 
+# The automatic IPv6 /64 keys are looked up exactly; only operator ranges need the prefix table (rebuilding it for every automatic v6 ban
+# made adding or expiring thousands of them quadratic: 10,000 bans stalled the event loop for 12 s).
+proc ::tg::ban::isRangeKey {k} {
+    expr {[string first / $k] >= 0 && ![string match {*:*/64} $k]}
+}
+
 # Ranges (CIDR bans other than the automatic v6 /64 keys) need a prefix match.
 proc ::tg::ban::rebuildRanges {} {
     variable banned
@@ -114,15 +123,19 @@ proc ::tg::ban::strike {ip points reason} {
     variable threshold
     variable leak
     if {[isAllowed $ip]} { return 0 }
+    # a configured trusted proxy (CDN, tunnel) stands for many visitors: it is never struck, whatever one of them does
+    if {[::tg::ip::setMatch proxies $ip]} { return 0 }
     set k [::tg::ip::key $ip]
     if {[info exists banned($k)]} { return 0 }
     set t [::tg::now]
     ::tg::stat::incr strikes
     if {[info exists score($k)]} {
         lassign $score($k) p last
-        set p [expr {max(0.0, $p - $leak * ($t - $last) / 1000.0)}]
+        set p [expr {max(0.0, $p - $leak * max(0, $t - $last) / 1000.0)}]
     } else {
-        if {[array size score] > 300000} { return 0 }
+        variable nScore
+        if {$nScore > 300000} { return 0 }
+        incr nScore
         set p 0.0
     }
     set p [expr {$p + $points}]
@@ -147,12 +160,18 @@ proc ::tg::ban::add {ip reason {sec ""} {source auto}} {
         return 0
     }
     set k [keyOf $ip]
-    if {![info exists banned($k)] && [array size banned] >= 200000} {
+    variable nBanned
+    variable nHist
+    if {![info exists banned($k)] && $nBanned >= 200000} {
         ::tg::log::warn "ban table full (200000 entries); not banning $k"
         return 0
     }
     set t [::tg::now]
     set level 0
+    set isNew [expr {![info exists banned($k)]}]
+    # an address that is already banned keeps its ban and its history: repeated automatic reports against it (the connection monitor, a
+    # log watcher) must neither extend the ban nor walk it up the escalation ladder in seconds
+    if {!$isNew && $sec eq ""} { return 0 }
     if {$sec eq ""} {
         if {[info exists hist($k)]} {
             lassign $hist($k) lv last
@@ -160,19 +179,22 @@ proc ::tg::ban::add {ip reason {sec ""} {source auto}} {
         }
         set idx [expr {min($level, [llength $steps] - 1)}]
         set sec [lindex $steps $idx]
-        set hist($k) [list [expr {$level + 1}] $t]
+        if {$nHist < 200000 || [info exists hist($k)]} {
+            if {![info exists hist($k)]} { incr nHist }
+            set hist($k) [list [expr {$level + 1}] [expr {$t + $sec * 1000}]]
+        }
     }
     set until [expr {$sec == 0 ? 0 : $t + $sec * 1000}]
-    set isNew [expr {![info exists banned($k)]}]
     if {!$isNew} {
         # extend only; never shorten an existing ban
         set old [dict get $banned($k) until]
         if {$old == 0 || ($until != 0 && $old >= $until)} { return 0 }
     }
     set info [dict create until $until since $t reason $reason level $level source $source]
+    if {$isNew} { incr nBanned }
     set banned($k) $info
     set dirty 1
-    if {[string first / $k] >= 0} { rebuildRanges }
+    if {[isRangeKey $k]} { rebuildRanges }
     if {$isNew} {
         ::tg::stat::incr bans
         ::tg::log::alert "BANNED $k for [expr {$sec == 0 ? {ever} : [::tg::fmtDuration $sec]}]: $reason"
@@ -192,11 +214,13 @@ proc ::tg::ban::remove {ip {why manual}} {
     variable onUnban
     set k [keyOf $ip]
     if {![info exists banned($k)]} { return 0 }
+    variable nBanned
+    if {$nBanned > 0} { incr nBanned -1 }
     unset banned($k)
     unset -nocomplain score($k)
     if {$why eq "manual"} { unset -nocomplain hist($k) }
     set dirty 1
-    if {[string first / $k] >= 0} { rebuildRanges }
+    if {[isRangeKey $k]} { rebuildRanges }
     ::tg::log::info "unbanned $k ($why)"
     foreach cb $onUnban {
         if {[catch {{*}$cb $k} err]} { ::tg::log::warn "unban callback failed: $err" }
@@ -221,7 +245,8 @@ proc ::tg::ban::all {} {
         lappend rows [dict create key $k {*}$banned($k)]
     }
     lsort -decreasing -command [list apply {{a b} {
-        expr {[dict get $a since] - [dict get $b since]}
+        set x [dict get $a since]; set y [dict get $b since]
+        expr {$x < $y ? -1 : $x > $y ? 1 : 0}
     }}] $rows
 }
 
@@ -255,6 +280,10 @@ proc ::tg::ban::tick {t} {
             if {$t - [lindex $hist($k) 1] > $resetAfter * 1000 && ![info exists banned($k)]} { unset hist($k) }
         }
     }
+    variable nScore
+    variable nBanned
+    variable nHist
+    set nScore [array size score]; set nBanned [array size banned]; set nHist [array size hist]
     if {$dirty && $t - $lastSave >= 5000} { save }
 }
 
@@ -314,6 +343,7 @@ namespace eval ::tg::trust {
     variable good
     array set good {}
     variable max 50000
+    variable nGood 0           ;# entries (kept as a counter; prune resynchronises it)
     variable file ""
     variable dirty 0
     variable lastSave 0
@@ -330,7 +360,9 @@ proc ::tg::trust::note {ip} {
     if {!$enabled} return
     set k [::tg::ip::key $ip]
     if {![info exists good($k)]} {
-        if {[array size good] >= $max} { prune }
+        variable nGood
+        if {$nGood >= $max} { prune; set nGood [array size good] }
+        incr nGood
         set dirty 1
     }
     set good($k) [::tg::now]

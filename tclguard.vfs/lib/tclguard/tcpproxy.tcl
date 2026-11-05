@@ -176,7 +176,9 @@ proc ::tg::tcp::accept {name chan ip port} {
         # Cheapest possible rejection: no logging, no strike.
         catch {close $chan}
         ::tg::stat::incr connRej
-        ::tg::stat::incr blocked
+        # (not counted in 'blocked': that figure raises the threat level for everybody, and an address that is already banned and keeps
+        # knocking says nothing about new attackers; one banned address at a few thousand connections a second was enough to put the site
+        # into "Under attack" for innocent visitors)
         ::tg::stat::talk $key blocked
         return
     }
@@ -199,16 +201,22 @@ proc ::tg::tcp::accept {name chan ip port} {
             reject $chan $name $ip $key "lockdown"
             return
         }
-        set pk "$name,$key"
-        set cur [expr {[info exists perip($pk)] ? $perip($pk) : 0}]
-        if {$cur >= [scaled [dict get $L maxConnsPerIP] $ip]} {
-            reject $chan $name $ip $key "too many connections" 1
-            return
-        }
-        set win [expr {[dict get $L connWindow] * 1000}]
-        if {[::tg::rate::hit "c:$name:$key" $win] > [scaled [dict get $L connRate] $ip]} {
-            reject $chan $name $ip $key "connection rate" 1
-            return
+        # A trusted proxy (a CDN, a tunnel) carries many visitors on a few addresses: counting its connections against the per-address
+        # limits would refuse the whole site after a few dozen visitors. Its visitors are limited per client address by the request limits.
+        if {[dict get $L type] eq "http" && [::tg::ip::setMatch "tp:$name" $ip]} {
+            # (nothing: per-address connection limits do not apply to the proxy itself)
+        } else {
+            set pk "$name,$key"
+            set cur [expr {[info exists perip($pk)] ? $perip($pk) : 0}]
+            if {$cur >= [scaled [dict get $L maxConnsPerIP] $ip]} {
+                reject $chan $name $ip $key "too many connections" 1
+                return
+            }
+            set win [expr {[dict get $L connWindow] * 1000}]
+            if {[::tg::rate::hit "c:$name:$key" $win] > [scaled [dict get $L connRate] $ip]} {
+                reject $chan $name $ip $key "connection rate" 1
+                return
+            }
         }
     }
     if {$nconn($name) >= [dict get $L maxConns]} {
@@ -429,7 +437,7 @@ proc ::tg::tcp::pump {id dir} {
         set act($id) [::tg::now]
         if {$dir eq "c2b"} { incr bin($id) $n } else {
             incr bout($id) $n
-            if {$mode($id) eq "http"} { ::tg::http::onResponseData $id $data }
+            if {$mode($id) eq "http"} { ::tg::http::onResponseData $id $data; ::tg::http::responseActive $id }
         }
         ::tg::stat::incr [expr {$dir eq "c2b" ? "bytesIn" : "bytesOut"}] $n
         if {[catch {puts -nonewline $to $data}]} { close_ $id "write error"; return }

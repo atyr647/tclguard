@@ -100,8 +100,11 @@ proc ::tg::udp::inbound {name} {
     set s $srv($name)
     if {[catch {
         set data [read $s]
-        set peer [fconfigure $s -peer]
     }]} return
+    # An empty read is what the socket reports after an ICMP error ("port unreachable": a client that closed its socket): there is no
+    # datagram, and -peer would name whoever was last heard, so striking it would punish a bystander. Nothing to do.
+    if {$data eq ""} return
+    if {[catch {set peer [fconfigure $s -peer]}]} return
     lassign $peer ip port
     set L $cfg($name)
     set len [string length $data]
@@ -109,7 +112,6 @@ proc ::tg::udp::inbound {name} {
 
     if {[::tg::ban::check $ip]} {
         ::tg::stat::incr udpDrop
-        ::tg::stat::incr blocked
         ::tg::stat::talk $key blocked
         return
     }
@@ -159,6 +161,12 @@ proc ::tg::udp::inbound {name} {
         }
         if {$nsess($name) >= [dict get $L maxSessions] ||
             [::tg::tcp::connectionCount] + ($total / 2) >= $::tg::tcp::maxTotal} {
+            drop $ip $key 0 0 ""
+            return
+        }
+        # Unknown sources get at most half of the global capacity for UDP sessions: a session is free to create for anyone (even a spoofed
+        # source), and without this limit a few hundred packets from distinct addresses refuse every TCP visitor, known ones too.
+        if {!$priv && $total >= max(1, int($::tg::tcp::maxTotal * 0.5)) && ![::tg::trust::known $ip]} {
             drop $ip $key 0 0 ""
             return
         }
