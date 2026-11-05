@@ -12,13 +12,18 @@ def rss_mb(pid):
     except OSError: pass
     return -1
 
+import weakref
+_pending = weakref.WeakKeyDictionary()   # socket -> bytes already received beyond the line returned last time
 def line(s, timeout=20):
-    s.settimeout(timeout); d = b""
-    while not d.endswith(b"\n"):
+    """Exactly one line from the socket (replies can arrive coalesced in one segment, e.g. on macOS: keep the rest for the next call)."""
+    s.settimeout(timeout); d = _pending.get(s, b"")
+    while b"\n" not in d:
         c = s.recv(4096)
         if not c: break
         d += c
-    return d.decode(errors="replace").strip()
+    ln, sep, rest = d.partition(b"\n")
+    _pending[s] = rest
+    return ln.decode(errors="replace").strip()
 
 be = HttpBackend(); port = free_port()
 g = Guard({"web": {"type": "http", "port": port, "backendPort": be.port}}, {})
