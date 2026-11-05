@@ -99,8 +99,17 @@ try:
         except OSError: break
     for s in socks: s.close()                       # linger 0 = RST
     check(f"a storm of {len(socks)} reset connections (half requests, half bodies)", len(socks) >= 1000)
-    # (on a busy machine the guard is still working through the resets: give it time to recover, but it must recover)
-    check("...afterwards the guard serves normally", wait_until(lambda: serves(port), 20, 0.5))
+    # (the guard may notice some of the resets only when a timeout fires - bodyTimeout is 30 s - so it gets that long to recover; it must recover.
+    # The connection table is sampled while waiting so that a failure says what was holding the slots.)
+    trace = []
+    def recovered():
+        ok = serves(port)
+        rc, out = g.ctl("debug")
+        m = re.search(r"tcpConns\s+(\d+)", out); trace.append((round(time.time() - t_storm), ok, int(m.group(1)) if m else out[:60]))
+        return ok
+    t_storm = time.time()
+    check("...afterwards the guard serves normally", wait_until(recovered, 45, 1.0), trace[-12:])
+    print("  recovery trace (seconds after the storm, served, open connections):", trace[:3], "...", trace[-2:])
     if LINUX:
         time.sleep(5)
         f2 = fds(g.proc.pid)
