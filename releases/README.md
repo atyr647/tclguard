@@ -30,7 +30,7 @@ Checked on **real GitHub-hosted runners** (Windows Server 2025 as administrator,
 |---|---|---|---|
 | Starpack in this folder | yes | yes (both .exe) | **yes (arm64 and Intel)** |
 | `selftest` (15 live-attack checks incl. UDP relay) | yes | **yes, real Windows** | **yes, the starpack on a real Mac** (and from source) |
-| Unit tests (342 checks: config, bans, firewall command logic, crypto, installer, updater ...) | yes | **yes, run by the Tcl inside the starpack** (Unix-simulating installer/updater tests are skipped there) | yes |
+| Unit tests (380 checks: config, bans, firewall command logic, crypto, installer, updater ...) | yes | **yes, run by the Tcl inside the starpack** (Unix-simulating installer/updater tests are skipped there) | yes |
 | Integration: real sockets, 48 HTTP + 57 feature checks incl. UDP, WebSocket, PROXY protocol | yes | **yes, against the Windows starpack** | **yes, against the Mac starpack** |
 | TLS termination (own tcltls + static OpenSSL 3.5.9 in the starpacks) | 39 checks, source and starpack | **34 checks, real Windows, starpack** | **39 checks, the Mac starpack** (and from source with tcltls 2.0.1) |
 | Let's Encrypt (ACME) against Pebble | 20 checks, source and starpack | **20 checks, real Windows** | 20 checks |
@@ -41,6 +41,8 @@ Checked on **real GitHub-hosted runners** (Windows Server 2025 as administrator,
 | Live connection scan (`netstat`) | `/proc` | **parsed from a real Windows table** | parsed from BSD netstat |
 | Start at sign-in | XDG autostart entry | **Task Scheduler task created, read back, removed** | LaunchAgent |
 | GUI | Xvfb (36 flows) | **36 scripted flows on a real desktop** | **36 under Aqua, in the Mac starpack, also run as root** (what *Restart as administrator* produces) |
+| Hardening suites: audit regressions, control port, reload, operations (metrics, dry run, alerts, overload), chaos, leaks (`tests/integration`, 14 + 16 + 28 + 39 + 21 + 5 checks) | yes, source and the starpack | run against the starpack in CI | run against the starpack in CI |
+| Real browser (Chromium via Playwright): page, keep-alive, WebSocket, upload, challenge, HTTPS (14 checks) | yes | - | - |
 | HTTP parser fuzzer | 0 findings in the CI smoke run, 103 regression checks | (the parser is the same Tcl) | (same) |
 | Sustained flood test (mixed soak etc.) | yes, loopback and network namespaces with the kernel firewall, [docs/LOAD.md](../docs/LOAD.md) | **yes, loopback, with and without `netsh` bans** | **yes, loopback, with and without `pf` bans** |
 
@@ -49,7 +51,7 @@ runtimes in `tools/runtimes/` by `tools/rewrap.sh`. They carry only the linker's
 after downloading run `xattr -cr tclguard-macos-arm64` once (or right-click, *Open*); see `docs/ELEVATION.md`. Only the arm64 build runs in the full test suite
 (the runner is Apple silicon); the Intel build was built and passed the self-test on an Intel runner, nothing more.
 
-Not verified anywhere: behaviour under a real multi-gigabit flood or over a real network (the flood test is loopback on one machine), the
+Not verified anywhere: a third-party penetration test, behaviour under a real multi-gigabit flood or over a real network (the flood test is loopback on one machine), the
 "Restart as administrator" UAC / osascript prompts (they need a person to click), signed updates against a real release (the signing key has
 not been generated yet, see `docs/UPDATES.md`), and real-world uptime.
 
