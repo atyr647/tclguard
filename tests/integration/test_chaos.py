@@ -67,8 +67,10 @@ finally:
 
 # ---------------------------------------------------------------- a flapping backend, and a storm of rude disconnects
 be = HttpBackend(); bport = be.port; port = free_port()
+# (levelCalmSec 5: a storm of 1500 connections raises the threat level, and for levelCalmSec after the traffic stops unknown visitors get the cookie
+# challenge (307) instead of the page - the intended behaviour, but 60 s by default is a long time to wait in a test)
 g = Guard({"web": {"type": "http", "port": port, "backendPort": bport, "connRate": 100000, "maxConnsPerIP": 5000, "reqRate": 100000, "reqWindow": 10}},
-          {"strikeThreshold": 100000})
+          {"strikeThreshold": 100000, "levelCalmSec": 5})
 try:
     g.start(); assert wait_port(port)
     check("baseline: served", serves(port))
@@ -103,13 +105,15 @@ try:
     # The connection table is sampled while waiting so that a failure says what was holding the slots.)
     trace = []
     def recovered():
-        ok = serves(port)
+        code = status(get("/", host="x", port=port, timeout=4))
         rc, out = g.ctl("debug")
-        m = re.search(r"tcpConns\s+(\d+)", out); trace.append((round(time.time() - t_storm), ok, int(m.group(1)) if m else out[:60]))
-        return ok
+        m = re.search(r"tcpConns\s+(\d+)", out)
+        rc, st = g.ctl("status"); lv = re.search(r"level\s+(\{[^}]*\}|\S+)", st)
+        trace.append((round(time.time() - t_storm), code, int(m.group(1)) if m else out[:60], lv.group(1)[:60] if lv else "?"))
+        return code == 200
     t_storm = time.time()
     check("...afterwards the guard serves normally", wait_until(recovered, 45, 1.0), trace[-12:])
-    print("  recovery trace (seconds after the storm, served, open connections):", trace[:3], "...", trace[-2:])
+    print("  recovery trace (seconds after the storm, HTTP status, open connections, threat level):", trace[:3], "...", trace[-2:])
     if LINUX:
         time.sleep(5)
         f2 = fds(g.proc.pid)

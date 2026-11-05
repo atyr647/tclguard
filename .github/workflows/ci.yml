@@ -379,9 +379,17 @@ jobs:
         run: |
           export TG_CMD="$PWD/releases/tclguard-macos-arm64"
           cd tests/integration
-          python3 -u test_http.py && python3 -u test_features.py && python3 -u test_tls.py && python3 -u test_ipv6.py
-          python3 -u test_audit_fixes.py && python3 -u test_control.py && python3 -u test_reload.py && python3 -u test_ops.py && python3 -u test_chaos.py
-          python3 -u test_fdlimit.py && python3 -u test_reserve.py
+          python3 -u test_http.py
+          python3 -u test_features.py
+          python3 -u test_tls.py
+          python3 -u test_ipv6.py
+          python3 -u test_audit_fixes.py
+          python3 -u test_control.py
+          python3 -u test_reload.py
+          python3 -u test_ops.py
+          python3 -u test_chaos.py
+          python3 -u test_fdlimit.py
+          python3 -u test_reserve.py
           export PATH="$(brew --prefix openssl@3)/bin:$PATH"
           python3 -u test_update_starpack.py
       - name: Released starpack - GUI smoke test under Aqua
@@ -451,11 +459,20 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           brew install openssl@3 || true
+          export PATH="$(brew --prefix openssl@3)/bin:$PATH"      # (the system LibreSSL's s_client does not build the chain the TLS test checks)
           export TG_CMD="$PWD/releases/tclguard-macos-x86_64"
           cd tests/integration
-          python3 -u test_http.py && python3 -u test_features.py && python3 -u test_tls.py && python3 -u test_ipv6.py
-          python3 -u test_audit_fixes.py && python3 -u test_control.py && python3 -u test_reload.py && python3 -u test_ops.py && python3 -u test_chaos.py
-          python3 -u test_fdlimit.py && python3 -u test_reserve.py
+          python3 -u test_http.py
+          python3 -u test_features.py
+          python3 -u test_tls.py
+          python3 -u test_ipv6.py
+          python3 -u test_audit_fixes.py
+          python3 -u test_control.py
+          python3 -u test_reload.py
+          python3 -u test_ops.py
+          python3 -u test_chaos.py
+          python3 -u test_fdlimit.py
+          python3 -u test_reserve.py
           export PATH="$(brew --prefix openssl@3)/bin:$PATH"
           python3 -u test_update_starpack.py
       - name: Released starpack - GUI smoke test under Aqua
